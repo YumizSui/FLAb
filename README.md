@@ -1,5 +1,5 @@
 # FLAb: Fitness Landscapes for Antibodies
-Official repository for `FLAb: Benchmarking deep learning methods for antibody fitness prediction`. FLAb provides experimental data for six properties of therapeutic antibodies: Expression, themrostability, immunogenicity, aggregation, polyreactivity, and binding affinity. We use FLAb to assess the performance of several widely used deep learning models (AntiBERTy, IgLM, ProtGPT2, ProGen2, ProteinMPNN, ESM-IF) and compare them to physics-based Rosetta.
+Official repository for `FLAb: Benchmarking deep learning methods for antibody fitness prediction`. FLAb provides experimental data for six properties of therapeutic antibodies: Expression, themrostability, immunogenicity, aggregation, polyreactivity, and binding affinity. We use FLAb to assess the performance of several widely used deep learning models and compare them to physics-based Rosetta. A convenience interface to the FLAb Github repository can be found [here](https://r2.graylab.jhu.edu/flab?current_page=1&key_words_value=&category=aggregation&assay=any&study=any&year=any&license=any&size=any&).
 
 ![Biophysical Properties](Fig_biophysical_properties.png)
 

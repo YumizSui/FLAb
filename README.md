@@ -1,7 +1,50 @@
 # FLAb: Fitness Landscapes for Antibodies
-Official repository for `FLAb: Benchmarking deep learning methods for antibody fitness prediction`. FLAb provides experimental data for six properties of therapeutic antibodies: Expression, themrostability, immunogenicity, aggregation, polyreactivity, and binding affinity. We use FLAb to assess the performance of several widely used deep learning models and compare them to physics-based Rosetta. A convenience interface to the FLAb Github repository can be found [here](https://r2.graylab.jhu.edu/flab?current_page=1&key_words_value=&category=aggregation&assay=any&study=any&year=any&license=any&size=any&).
+
+## Summary
+`The Fitness Landscape for Antibodies (FLAb)` is the largest publicly available therapeutic antibody dataset designed to train and benchmark protein AI models. It provides open-access, high-quality developability data on diverse therapeutic properties, including expression, thermostability, immunogenicity, aggregation, polyreactivity, binding affinity, and pharmacokinetics. FLAb encompasses over 3 million antibody developability assay data points, aggregated from public studies. Each dataset is stored in CSV format, with columns representing the amino acid sequence(s) of antibody variable domains (e.g., one column per chain for two-chain antibodies) and the corresponding therapeutic assay value. Additional metadata columns may also be included. A convenience interface to the FLAb Github repository can be found [here](https://r2.graylab.jhu.edu/flab?current_page=1&key_words_value=&category=aggregation&assay=any&study=any&year=any&license=any&size=any&).
 
 ![Biophysical Properties](Fig_biophysical_properties.png)
+
+## About
+
+The FLAb dataset is used to benchmark and train protein AI models for (1) therapeutic antibody design and prediction of therapeutic properties. FLAb represents a unique, centralized resource encompassing diverse and experimentally validated therapeutic antibody properties, including data from assays commonly used in antibody discovery pipelines. To date, no publicly available dataset has been compiled at this scale or breadth, making FLAb a first-of-its-kind tool for the protein design and AI research communities. By providing access to high-quality, multi-dimensional benchmark data, FLAb supports the development of models that generate or filter optimized antibody candidates more efficiently than current experimental approaches. Our long-term vision is for FLAb to serve as a foundation for advancing therapeutic antibody design.
+
+## Data
+
+The dataset has been partitioned based on therapeutic properties (e.g., "expression," "thermostability," "binding affinity") into separate folders within the data directory.
+
+```
+├── data/
+|    ├── README.md
+|    ├── aggregation/
+|    |    ├── README.md
+|    |    ├── jain2017biophyscial_HICRT.csv
+|    |    ├── jain2017biophysical_ACSINS.csv
+|    |    ├── ...
+|    |    └── shanehsazzadeh2023unlocking_SEC.csv
+|    ├── binding/
+|    |    ├── README.md
+|    |    ├── AbRank_dataset.csv.zip
+|    |    ├── adams2017measuring_4420-fluorescein_kd-flow.csv
+|    |    ├── ...
+|    |    ├── zimmerman2020antibody_4420_kd.csv
+|    ├── expression/
+|    |    ├── ...
+|    ├── immunogenicity/
+|    |    ├── ...
+|    ├── immunogenicity/
+|    |    ├── ...
+|    ├── pharmacokinetics
+|    |    ├── ...
+|    ├── polyreactivity/
+|    |    ├── ...
+|    ├── thermostability/
+|    |    ├── ...
+```
+The [README.md](https://github.com/Graylab/FLAb/tree/main/data#readme) file within the data directory provides a tabular description of the with the study name, a link to the study, the shorthand naming convention used for the corresponding CSV file, the amount of data the study provides in each developability category, and the associated license of the data.
+
+The README.md file provided in each respective fitness category folder provides a description of each dataset in that folder, including size, assay units, key words associated with that file (such as "germline", "clinical stage", "nanobody", "SARS-CoV-2"), the associated publication and link, the year of the publication, and the direction of favorable (higher fitness) values. For example, the [expression README.md](https://github.com/Graylab/FLAb/tree/main/data/expression) provides a description for all the expression datasets.
+
 
 ## Install
 

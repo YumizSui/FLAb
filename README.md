@@ -11,7 +11,7 @@ The FLAb dataset is used to benchmark and train protein AI models for (1) therap
 
 ## Data
 
-The dataset has been partitioned based on therapeutic properties (e.g., "expression," "thermostability," "binding affinity") into separate folders within the data directory.
+The dataset has been partitioned based on therapeutic properties (e.g., "expression," "thermostability," "binding affinity") into separate folders within [the data directory](https://github.com/Graylab/FLAb/tree/main/data).
 
 ```
 ├── data/

@@ -120,7 +120,111 @@ def iglm_score(df):
     return df
 
 
-def antiberty_score(df):
+def antiberty_score(df, batch_size=16, device=None):
+    # antibertyがインポートされていない場合は再試行
+    global antiberty
+    import torch
+
+    # デバイスの決定
+    if device is None:
+        if torch.cuda.is_available():
+            device = 'cuda:0'
+        else:
+            device = 'cpu'
+    else:
+        device = str(device)
+
+    # デバイスオブジェクトに変換
+    device_obj = torch.device(device)
+
+    try:
+        if 'antiberty' not in globals() or antiberty is None:
+            from antiberty import AntiBERTyRunner
+            antiberty = AntiBERTyRunner()
+
+        # デバイスを設定
+        # device属性はtorch.deviceオブジェクトとして設定
+        if hasattr(antiberty, 'device'):
+            antiberty.device = device_obj
+
+        # モデルを指定デバイスに移動
+        if hasattr(antiberty, 'model') and antiberty.model is not None:
+            antiberty.model = antiberty.model.to(device_obj)
+
+        # pseudo_log_likelihoodメソッドをモンキーパッチで修正
+        # labelsテンソルをデバイスに移動するように修正
+        original_pseudo_log_likelihood = antiberty.pseudo_log_likelihood
+
+        def patched_pseudo_log_likelihood(sequences, batch_size=None):
+            plls = []
+            for s in sequences:
+                masked_sequences = []
+                for i in range(len(s)):
+                    masked_sequence = list(s[:i]) + ["[MASK]"] + list(s[i + 1:])
+                    masked_sequences.append(" ".join(masked_sequence))
+
+                from antiberty.utils.general import exists
+                tokenizer_out = antiberty.tokenizer(
+                    masked_sequences,
+                    return_tensors="pt",
+                    padding=True,
+                )
+                tokens = tokenizer_out["input_ids"].to(antiberty.device)
+                attention_mask = tokenizer_out["attention_mask"].to(antiberty.device)
+
+                logits = []
+                with torch.no_grad():
+                    if not exists(batch_size):
+                        batch_size_ = len(masked_sequences)
+                    else:
+                        batch_size_ = batch_size
+
+                    from tqdm import tqdm
+                    for i in tqdm(range(0, len(masked_sequences), batch_size_)):
+                        batch_end = min(i + batch_size_, len(masked_sequences))
+                        tokens_ = tokens[i:batch_end]
+                        attention_mask_ = attention_mask[i:batch_end]
+
+                        outputs = antiberty.model(
+                            input_ids=tokens_,
+                            attention_mask=attention_mask_,
+                        )
+
+                        logits.append(outputs.prediction_logits)
+
+                logits = torch.cat(logits, dim=0)
+                logits[:, :, antiberty.tokenizer.all_special_ids] = -float("inf")
+                logits = logits[:, 1:-1]  # remove CLS and SEP tokens
+
+                # get masked token logits
+                logits = torch.diagonal(logits, dim1=0, dim2=1).unsqueeze(0)
+                labels = antiberty.tokenizer.encode(
+                    " ".join(list(s)),
+                    return_tensors="pt",
+                )[:, 1:-1].to(antiberty.device)  # デバイスに移動
+                nll = torch.nn.functional.cross_entropy(
+                    logits,
+                    labels,
+                    reduction="mean",
+                )
+                pll = -nll
+
+                plls.append(pll)
+
+            plls = torch.stack(plls, dim=0)
+
+            return plls
+
+        # モンキーパッチを適用
+        antiberty.pseudo_log_likelihood = patched_pseudo_log_likelihood
+
+    except (ImportError, NameError):
+        raise ImportError(
+            "AntiBERTyがインストールされていません。"
+            "以下のコマンドでインストールしてください:\n"
+            "pip install antiberty"
+        )
+
     heavy_score = []
     light_score = []
 
@@ -130,7 +234,7 @@ def antiberty_score(df):
             df['light'][row],
         ]
 
-        pll = antiberty.pseudo_log_likelihood(sequences, batch_size=16)
+        pll = antiberty.pseudo_log_likelihood(sequences, batch_size=batch_size)
 
         perplexity_h = math.exp(-pll.tolist()[0])
         perplexity_l = math.exp(-pll.tolist()[1])
@@ -225,16 +329,16 @@ def progen_score(df, model_version, device):
 
     for seq in df['heavy']:
         context = seq
-        
+
         reverse = lambda s: s[::-1]
 
         ll_lr_mean = ll(tokens=context, reduction='mean')
         ll_rl_mean = ll(tokens=reverse(context), reduction='mean')
 
         ll_mean = .5 * (ll_lr_mean + ll_rl_mean)
-        
+
         perplexity = math.exp(-ll_mean)
-        
+
         perplexity_mean_list_h.append(perplexity)
 
     df['heavy_perplexity'] = perplexity_mean_list_h
@@ -251,9 +355,9 @@ def progen_score(df, model_version, device):
         ll_rl_mean = ll(tokens=reverse(context), reduction='mean')
 
         ll_mean = .5 * (ll_lr_mean + ll_rl_mean)
-    
+
         perplexity = math.exp(-ll_mean)
-    
+
         perplexity_mean_list_l.append(perplexity)
 
     df['light_perplexity'] = perplexity_mean_list_l
@@ -288,7 +392,7 @@ def esmif_score(pdb):
     ll_avg =(ll_l + ll_h) / 2
 
     perplexity = math.exp(-ll_avg)
-    
+
     return perplexity
 
 def pyrosetta_score(pdb):
@@ -314,13 +418,13 @@ def mpnn_score(pdb):
 
     path_to_model_weights='/home/mchungy1/scr4_jgray21/mchungy1/AbDesign/models/ProteinMPNN/vanilla_model_weights'
     hidden_dim = 128
-    num_layers = 3 
+    num_layers = 3
     model_folder_path = path_to_model_weights
     if model_folder_path[-1] != '/':
         model_folder_path = model_folder_path + '/'
     checkpoint_path = model_folder_path + f'{model_name}.pt'
 
-    checkpoint = torch.load(checkpoint_path, map_location=device) 
+    checkpoint = torch.load(checkpoint_path, map_location=device)
 
     noise_level_print = checkpoint['noise_level']
 
@@ -356,14 +460,14 @@ def mpnn_score(pdb):
     score_only=0                      # 0 for False, 1 for True; score input backbone-sequence pairs
     conditional_probs_only=0          # 0 for False, 1 for True; output conditional probabilities p(s_i given the rest of the sequence and backbone)
     conditional_probs_only_backbone=0 # 0 for False, 1 for True; if true output conditional probabilities p(s_i given backbone)
-        
+
     batch_size=1                      # Batch size; can set higher for titan, quadro GPUs, reduce this if running out of GPU memory
     max_length=20000                  # Max sequence length
-        
+
     out_folder='.'                    # Path to a folder to output sequences, e.g. /home/out/
     jsonl_path=''                     # Path to a folder with parsed pdb into jsonl
     omit_AAs='X'                      # Specify which amino acids should be omitted in the generated sequence, e.g. 'AC' would omit alanine and cystine.
-        
+
     pssm_multi=0.0                    # A value between [0.0, 1.0], 0.0 means do not use pssm, 1.0 ignore MPNN predictions
     pssm_threshold=0.0                # A value between -inf + inf to restric per position AAs
     pssm_log_odds_flag=0               # 0 for False, 1 for True
@@ -425,7 +529,7 @@ def mpnn_score(pdb):
                     randn_2 = torch.randn(chain_M.shape, device=X.device)
                     if tied_positions_dict == None:
                         sample_dict = model.sample(X, randn_2, S, chain_M, chain_encoding_all, residue_idx, mask=mask, temperature=temp, omit_AAs_np=omit_AAs_np, bias_AAs_np=bias_AAs_np, chain_M_pos=chain_M_pos, omit_AA_mask=omit_AA_mask, pssm_coef=pssm_coef, pssm_bias=pssm_bias, pssm_multi=pssm_multi, pssm_log_odds_flag=bool(pssm_log_odds_flag), pssm_log_odds_mask=pssm_log_odds_mask, pssm_bias_flag=bool(pssm_bias_flag), bias_by_res=bias_by_res_all)
-                        S_sample = sample_dict["S"] 
+                        S_sample = sample_dict["S"]
                     else:
                         sample_dict = model.tied_sample(X, randn_2, S, chain_M, chain_encoding_all, residue_idx, mask=mask, temperature=temp, omit_AAs_np=omit_AAs_np, bias_AAs_np=bias_AAs_np, chain_M_pos=chain_M_pos, omit_AA_mask=omit_AA_mask, pssm_coef=pssm_coef, pssm_bias=pssm_bias, pssm_multi=pssm_multi, pssm_log_odds_flag=bool(pssm_log_odds_flag), pssm_log_odds_mask=pssm_log_odds_mask, pssm_bias_flag=bool(pssm_bias_flag), tied_pos=tied_pos_list_of_lists_list[0], tied_beta=tied_beta, bias_by_res=bias_by_res_all)
                     # Compute scores
@@ -480,7 +584,7 @@ def mpnn_score(pdb):
                             l0 += 1
                         score_print = np.format_float_positional(np.float32(score), unique=False, precision=4)
                         seq_rec_print = np.format_float_positional(np.float32(seq_recovery_rate.detach().cpu().numpy()), unique=False, precision=4)
-    
+
     perplexity = math.exp(score)
 
     return perplexity

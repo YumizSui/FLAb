@@ -4,11 +4,12 @@ AntiBERTyを使用して抗体配列のperplexityを計算し、fitnessとの相
 
 使用方法:
     python scripts/score_antiberty.py data/thermostability/hie2023efficient_C143_Tm.csv
+    python scripts/score_antiberty.py data/thermostability/hie2023efficient_C143_Tm.csv --ppl-only
 
 出力:
-    - score/antiberty/{fitness_dir}/{dataset_name}_ppl.csv: perplexityスコア
-    - score/antiberty/{fitness_dir}/{dataset_name}_corr.csv: 相関係数
-    - score/antiberty/{fitness_dir}/{dataset_name}_plot.png: 散布図
+    - score/antiberty/{fitness_dir}/{dataset_name}_ppl.csv: perplexityスコア（常に出力）
+    - score/antiberty/{fitness_dir}/{dataset_name}_corr.csv: 相関係数（--ppl-only指定時はスキップ）
+    - score/antiberty/{fitness_dir}/{dataset_name}_plot.png: 散布図（--ppl-only指定時はスキップ）
 """
 
 import argparse
@@ -99,6 +100,12 @@ def main():
         help='使用するデバイス（cuda:0, cpuなど。デフォルト: CUDAが利用可能ならcuda:0、そうでなければcpu）'
     )
 
+    parser.add_argument(
+        '--ppl-only',
+        action='store_true',
+        help='perplexityのみを計算し、プロットと相関係数の計算をスキップする'
+    )
+
     args = parser.parse_args()
 
     # CSVファイルの存在確認
@@ -171,6 +178,16 @@ def main():
         traceback.print_exc()
         sys.exit(1)
 
+    # Perplexityスコアの保存
+    ppl_path = os.path.join(output_dir, f'{name_only}_ppl.csv')
+    df.to_csv(ppl_path, index=False)
+    print(f"Perplexityスコアを保存: {ppl_path}")
+
+    # ppl-onlyオプションが指定されている場合はここで終了
+    if args.ppl_only:
+        print(f"\nPerplexityスコアは {ppl_path} に保存されました")
+        return
+
     # Fitness metricの設定
     fitness_metric = get_fitness_metric(fitness_dir, df)
 
@@ -201,11 +218,6 @@ def main():
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"プロットを保存: {plot_path}")
-
-    # Perplexityスコアの保存
-    ppl_path = os.path.join(output_dir, f'{name_only}_ppl.csv')
-    df.to_csv(ppl_path, index=False)
-    print(f"Perplexityスコアを保存: {ppl_path}")
 
     # 相関係数の計算
     print("\n相関係数を計算中...")

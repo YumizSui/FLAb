@@ -13,9 +13,91 @@ import os
 import sys
 import glob
 import subprocess
+import json
 from pathlib import Path
 
-def find_existing_results():
+def get_dataset_mapping():
+    """
+    データセット名のマッピングルールを返す
+    戻り値: dict[tuple[fitness_dir, dataset_name], tuple[alt_fitness_dir, alt_dataset_name]]
+    """
+    mapping = {}
+
+    # 完全一致マッピング
+    # Koenig2017_g6_*
+    mapping[('expression', 'Koenig2017_g6_er')] = ('expression', 'koenig2017mutational_er_g6')
+    mapping[('binding', 'Koenig2017_g6_Kd')] = ('binding', 'koenig2017mutational_kd_g6')
+
+    # Hie2022_* -> hie2023efficient_* (tm)
+    mapping[('tm', 'Hie2022_C143_Tm')] = ('thermostability', 'hie2023efficient_C143_Tm')
+    mapping[('tm', 'Hie2022_mAb114_Tm')] = ('thermostability', 'hie2023efficient_mAb114_Tm')
+    mapping[('tm', 'Hie2022_mAb114UCA_Tm')] = ('thermostability', 'hie2023efficient_mAb114UCA_Tm')
+    mapping[('tm', 'Hie2022_MEDI8852_Tm')] = ('thermostability', 'hie2023efficient_MEDI_Tm')
+    mapping[('tm', 'Hie2022_MEDI8852UCA_Tm')] = ('thermostability', 'hie2023efficient_MEDIUCA_Tm')
+    mapping[('tm', 'Hie2022_REGN10987_Tm')] = ('thermostability', 'hie2023efficient_REGN10987_Tm')
+    mapping[('tm', 'Hie2022_S309_Tm')] = ('thermostability', 'hie2023efficient_S309_Tm')
+
+    # Hie2022_* -> hie2023efficient_* (binding)
+    mapping[('binding', 'Hie2022_C143_Kd')] = ('binding', 'hie2023efficient_CoV2Beta_C143_Kd')
+    mapping[('binding', 'Hie2022_REGN10987_Kd')] = ('binding', 'hie2023efficient_CoV2Beta_REGN10987_Kd')
+    mapping[('binding', 'Hie2022_S309_Kd')] = ('binding', 'hie2023efficient_CoV2_S309_Kd')
+    mapping[('binding', 'Hie2022_mAb114_Kd')] = ('binding', 'hie2023efficient_ebola_mab114_Kd')
+    mapping[('binding', 'Hie2022_MEDI8852_Kd')] = ('binding', 'hie2023efficient_MEDI_H4Hubei_Kd')
+    mapping[('binding', 'Hie2022_MEDI8852UCA_Kd')] = ('binding', 'hie2023efficient_MEDIUCA_H1Solomon_Kd')
+
+    # Rosace2023_*
+    mapping[('tm', 'Rosace2023_Adalimumab_Tm')] = ('thermostability', 'rosace2023automated_tm1_adalimumab')
+    mapping[('tm', 'Rosace2023_Golimumab_Tm')] = ('thermostability', 'rosace2023automated_tm1_golimumab')
+    mapping[('binding', 'Rosace2023_Adalimumab_Kd')] = ('binding', 'rosace2023automated_kd_adalimumab')
+    mapping[('binding', 'Rosace2023_Golimumab_Kd')] = ('binding', 'rosace2023automated_kd_golimumab')
+
+    # Wittrup2017_CST_* -> jain2017biophysical_*
+    mapping[('expression', 'Wittrup2017_CST_HEK')] = ('expression', 'jain2017biophysical_HEK')
+    mapping[('expression', 'Wittrup2017_CST_BVP')] = ('polyreactivity', 'jain2017biophysical_BVPELISA')
+    mapping[('tm', 'Wittrup2017_CST_Tm')] = ('thermostability', 'jain2017biophysical_Tm')
+    mapping[('polyreactivity', 'Wittrup2017_CST_PSR')] = ('polyreactivity', 'jain2017biophysical_PSR')
+    mapping[('polyreactivity', 'Wittrup2017_CST_ELISA')] = ('polyreactivity', 'jain2017biophysical_ELISA')
+    mapping[('polyreactivity', 'Wittrup2017_CST_CIC')] = ('polyreactivity', 'jain2017biophysical_CICRT')
+    mapping[('polyreactivity', 'Wittrup2017_CST_SMAC')] = ('polyreactivity', 'jain2017biophysical_SMACRT')
+    mapping[('aggregation', 'Wittrup2017_CST_SMAC')] = ('polyreactivity', 'jain2017biophysical_SMACRT')
+    mapping[('aggregation', 'Wittrup2017_CST_CSI')] = ('aggregation', 'jain2017biophysical_CSIBLI')
+    mapping[('aggregation', 'Wittrup2017_CST_SAS')] = ('aggregation', 'jain2017biophysical_SAS')
+    mapping[('aggregation', 'Wittrup2017_CST_HIC')] = ('aggregation', 'jain2017biophyscial_HICRT')  # typo in filename
+    mapping[('aggregation', 'Wittrup2017_CST_SGAC')] = ('aggregation', 'jain2017biophysical_SGACSINS')
+    mapping[('aggregation', 'Wittrup2017_CST_ACSINS')] = ('aggregation', 'jain2017biophysical_ACSINS')
+
+    # Shanehsazzadeh2023_trastuzumab_*
+    mapping[('binding', 'Shanehsazzadeh2023_trastuzumab_zero_kd')] = ('binding', 'shanehsazzadeh2023unlocking_zerokd_trastuzumab')
+
+    # Warszawski2019_d44_Kd
+    mapping[('binding', 'Warszawski2019_d44_Kd')] = ('binding', 'warszawski2019_d44_Kd')
+
+    # Prihoda2021_mAb_immunogenicity
+    mapping[('immunogenicity', 'Prihoda2021_mAb_immunogenicity')] = ('immunogenicity', 'marks2021humanization_immunogenicity')
+
+    # gsk2023_* -> garbinski2023_* (パターンマッチングを辞書に追加)
+    # expression
+    mapping[('expression', 'gsk2023_RSB1_exp')] = ('expression', 'garbinski2023_exp')
+    mapping[('expression', 'gsk2023_AM14_exp')] = ('expression', 'garbinski2023_exp')
+    mapping[('expression', 'gsk2023_D25_exp')] = ('expression', 'garbinski2023_exp')
+    mapping[('expression', 'gsk2023_MOTA_exp')] = ('expression', 'garbinski2023_exp')
+
+    # binding
+    mapping[('binding', 'gsk2023_RSB1_Kd')] = ('binding', 'garbinski2023_kd')
+    mapping[('binding', 'gsk2023_AM14_Kd')] = ('binding', 'garbinski2023_kd')
+    mapping[('binding', 'gsk2023_D25_Kd')] = ('binding', 'garbinski2023_kd')
+    mapping[('binding', 'gsk2023_MOTA_Kd')] = ('binding', 'garbinski2023_kd')
+
+    # tm
+    mapping[('tm', 'gsk2023_RSB1_Tm')] = ('thermostability', 'garbinski2023_tm1')
+    mapping[('tm', 'gsk2023_AM14_Tm')] = ('thermostability', 'garbinski2023_tm1')
+    mapping[('tm', 'gsk2023_D25_Tm')] = ('thermostability', 'garbinski2023_tm1')
+    mapping[('tm', 'gsk2023_MOTA_Tm')] = ('thermostability', 'garbinski2023_tm1')
+
+    return mapping
+
+
+def find_existing_results(fitness_dir_filter=None):
     """
     score/antibertyにある既存の結果をすべて見つける
     戻り値: [(fitness_dir, dataset_name, csv_path), ...]
@@ -24,6 +106,7 @@ def find_existing_results():
 
     results = []
     score_dir = Path('score/antiberty')
+    mapping = get_dataset_mapping()
 
     if not score_dir.exists():
         print("score/antibertyディレクトリが見つかりません")
@@ -36,6 +119,10 @@ def find_existing_results():
         if len(parts) >= 4:
             fitness_dir = parts[2]  # score/antiberty/{fitness_dir}/...
             dataset_name = parts[3]  # score/antiberty/{fitness_dir}/{dataset_name}/...
+
+            # 早期フィルタリング
+            if fitness_dir_filter and fitness_dir != fitness_dir_filter:
+                continue
 
             # まず、直接的なパスを試す
             csv_path = None
@@ -51,40 +138,42 @@ def find_existing_results():
                     if thermostability_path.exists():
                         csv_path = thermostability_path
 
-                # 3. 既存の結果CSVからheavy/light列を読み込んで、dataディレクトリ内のCSVと比較
+                # 3. パターンマッチング: gsk2023_* -> garbinski2023_*
+                if csv_path is None and dataset_name.startswith('gsk2023_'):
+                    suffix = dataset_name.replace('gsk2023_', '')
+                    if suffix.endswith('_exp'):
+                        alt_name = 'garbinski2023_exp'
+                        alt_path = Path('data') / fitness_dir / f"{alt_name}.csv"
+                        if alt_path.exists():
+                            csv_path = alt_path
+                    elif suffix.endswith('_Tm') or fitness_dir == 'tm':
+                        alt_name = 'garbinski2023_tm1'
+                        alt_path = Path('data') / 'thermostability' / f"{alt_name}.csv"
+                        if alt_path.exists():
+                            csv_path = alt_path
+                    elif suffix.endswith('_Kd') or fitness_dir == 'binding':
+                        alt_name = 'garbinski2023_kd'
+                        alt_path = Path('data') / fitness_dir / f"{alt_name}.csv"
+                        if alt_path.exists():
+                            csv_path = alt_path
+
+                # 4. 辞書ベースのマッピング
                 if csv_path is None:
-                    try:
-                        df_result = pd.read_csv(ppl_file, nrows=1)
-                        if 'heavy' in df_result.columns and 'light' in df_result.columns:
-                            result_heavy = df_result['heavy'].iloc[0] if len(df_result) > 0 else None
-                            result_light = df_result['light'].iloc[0] if len(df_result) > 0 else None
+                    key = (fitness_dir, dataset_name)
+                    if key in mapping:
+                        alt_fitness_dir, alt_dataset_name = mapping[key]
+                        alt_path = Path('data') / alt_fitness_dir / f"{alt_dataset_name}.csv"
+                        if alt_path.exists():
+                            csv_path = alt_path
 
-                            if result_heavy and result_light:
-                                # dataディレクトリ内のすべてのCSVファイルを検索
-                                data_dirs = ['data/thermostability', 'data/expression', 'data/binding',
-                                           'data/aggregation', 'data/polyreactivity', 'data/immunogenicity',
-                                           'data/pharmacokinetics']
-
-                                for data_dir in data_dirs:
-                                    data_path = Path(data_dir)
-                                    if data_path.exists():
-                                        for csv_file in data_path.glob('*.csv'):
-                                            try:
-                                                df_data = pd.read_csv(csv_file, nrows=1)
-                                                if 'heavy' in df_data.columns and 'light' in df_data.columns:
-                                                    data_heavy = df_data['heavy'].iloc[0] if len(df_data) > 0 else None
-                                                    data_light = df_data['light'].iloc[0] if len(df_data) > 0 else None
-
-                                                    if data_heavy == result_heavy and data_light == result_light:
-                                                        csv_path = csv_file
-                                                        break
-                                            except:
-                                                continue
-
-                                    if csv_path:
-                                        break
-                    except Exception as e:
-                        pass
+                # 5. Hie2022_* のパターンマッチング（tmディレクトリ用）
+                if csv_path is None and dataset_name.startswith('Hie2022_') and fitness_dir == 'tm':
+                    alt_name = dataset_name.replace('Hie2022_', 'hie2023efficient_')
+                    if 'MEDI8852' in alt_name:
+                        alt_name = alt_name.replace('MEDI8852', 'MEDI')
+                    alt_path = Path('data') / 'thermostability' / f"{alt_name}.csv"
+                    if alt_path.exists():
+                        csv_path = alt_path
 
             if csv_path and csv_path.exists():
                 results.append((fitness_dir, dataset_name, str(csv_path)))
@@ -206,22 +295,69 @@ def main():
         help='特定のfitnessディレクトリのみ処理（例: tm, expression）'
     )
 
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='実際の実行をスキップして、マッピングの確認のみ行う'
+    )
+
+    parser.add_argument(
+        '--export-mapping',
+        type=str,
+        default=None,
+        help='マッピングをJSONファイルに出力（例: --export-mapping mapping.json）'
+    )
+
     args = parser.parse_args()
+
+    # マッピングをJSONに出力
+    if args.export_mapping:
+        # 実際に見つかったデータセットのマッピングを生成
+        results = find_existing_results(fitness_dir_filter=args.fitness_dir)
+        json_mapping = {}
+
+        for fitness_dir, dataset_name, csv_path in results:
+            key = f"{fitness_dir}/{dataset_name}"
+            # csv_pathからfitness_dirとdataset_nameを抽出
+            csv_path_obj = Path(csv_path)
+            alt_fitness_dir = csv_path_obj.parent.name
+            alt_dataset_name = csv_path_obj.stem
+            json_mapping[key] = {
+                "fitness_dir": alt_fitness_dir,
+                "dataset_name": alt_dataset_name,
+                "csv_path": csv_path
+            }
+
+        output_path = Path(args.export_mapping)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(json_mapping, f, indent=2, ensure_ascii=False)
+        print(f"マッピングを {output_path} に出力しました")
+        print(f"合計: {len(json_mapping)}個のマッピングルール")
+        return
 
     # 既存の結果を探す
     print("既存の結果を検索中...")
-    results = find_existing_results()
+    results = find_existing_results(fitness_dir_filter=args.fitness_dir)
 
     if not results:
         print("既存の結果が見つかりませんでした")
         sys.exit(1)
 
-    # フィルタリング
+    # フィルタリング（既にfind_existing_resultsでフィルタリング済み）
     if args.fitness_dir:
-        results = [(f, d, c) for f, d, c in results if f == args.fitness_dir]
         print(f"フィルタ: {args.fitness_dir} のみ処理")
 
     print(f"見つかったデータセット数: {len(results)}\n")
+
+    # マッピングの確認のみ
+    if args.dry_run:
+        print("="*60)
+        print("マッピング確認結果")
+        print("="*60)
+        for fitness_dir, dataset_name, csv_path in results:
+            print(f"  {fitness_dir}/{dataset_name} -> {csv_path}")
+        print(f"\n合計: {len(results)}個のデータセットが見つかりました")
+        return
 
     # 再現実行
     reproduce_scores(results, output_base=args.output_dir, device=args.device)

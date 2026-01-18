@@ -43,8 +43,8 @@ def _get_args():
 
     parser.add_argument("--device",
                       type=str,
-                      default='cpu',
-                      help="device to use: 'cpu' (default) or 'cuda:0' for GPU")
+                      default=None,
+                      help="Device to use: 'cuda:0' for GPU (default: auto-detect GPU if available, else CPU) or 'cpu'")
 
     parser.add_argument("--output-dir",
                       type=str,

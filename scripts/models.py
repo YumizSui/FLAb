@@ -133,7 +133,7 @@ def iglm_score(df):
     return df
 
 
-def antiberty_score(df, batch_size=16, device=None):
+def antiberty_score(df, batch_size=16, device=None, enable_batch=True):
     # antibertyがインポートされていない場合は再試行
     global antiberty
     import torch
@@ -238,27 +238,162 @@ def antiberty_score(df, batch_size=16, device=None):
             "pip install antiberty"
         )
 
+    def compute_pll_batch_multi_seq(sequences_list, internal_batch_size=batch_size):
+        """
+        Process multiple sequences with batched masked position computation.
+        sequences_list: list of sequences
+        Returns: list of perplexities
+        """
+        all_plls = []
+
+        # For each sequence, generate all masked variants
+        all_masked_seqs = []
+        seq_boundaries = [0]  # Track where each sequence's masked variants start
+        original_seqs = []
+
+        for s in sequences_list:
+            masked_for_seq = []
+            for i in range(len(s)):
+                masked_sequence = list(s[:i]) + ["[MASK]"] + list(s[i + 1:])
+                masked_for_seq.append(" ".join(masked_sequence))
+            all_masked_seqs.extend(masked_for_seq)
+            seq_boundaries.append(len(all_masked_seqs))
+            original_seqs.append(s)
+
+        if not all_masked_seqs:
+            return [0.0] * len(sequences_list)
+
+        # Tokenize all at once
+        tokenizer_out = antiberty.tokenizer(
+            all_masked_seqs,
+            return_tensors="pt",
+            padding=True,
+        )
+        tokens = tokenizer_out["input_ids"].to(device_obj)
+        attention_mask = tokenizer_out["attention_mask"].to(device_obj)
+
+        # Process in batches
+        all_logits = []
+        with torch.no_grad():
+            for i in range(0, len(all_masked_seqs), internal_batch_size):
+                batch_end_idx = min(i + internal_batch_size, len(all_masked_seqs))
+                tokens_ = tokens[i:batch_end_idx]
+                attention_mask_ = attention_mask[i:batch_end_idx]
+
+                outputs = antiberty.model(
+                    input_ids=tokens_,
+                    attention_mask=attention_mask_,
+                )
+                all_logits.append(outputs.prediction_logits)
+
+        logits = torch.cat(all_logits, dim=0)
+        logits[:, :, antiberty.tokenizer.all_special_ids] = -float("inf")
+        logits = logits[:, 1:-1]  # remove CLS and SEP tokens
+
+        # Calculate PLL for each sequence
+        for seq_idx, s in enumerate(original_seqs):
+            start = seq_boundaries[seq_idx]
+            end = seq_boundaries[seq_idx + 1]
+
+            if start == end:
+                all_plls.append(0.0)
+                continue
+
+            seq_logits = logits[start:end]
+
+            # Extract diagonal (masked position logits)
+            # For each masked variant, get the logits at the masked position
+            seq_logits_diag = torch.stack([seq_logits[i, i, :] for i in range(len(s))])
+
+            labels = antiberty.tokenizer.encode(
+                " ".join(list(s)),
+                return_tensors="pt",
+            )[:, 1:-1].to(device_obj)
+
+            nll = torch.nn.functional.cross_entropy(
+                seq_logits_diag.unsqueeze(0),
+                labels,
+                reduction="mean",
+            )
+            pll = -nll.item()
+            all_plls.append(math.exp(-pll))
+
+        return all_plls
+
+    # Check if light chain exists
+    has_light = 'light' in df.columns and df['light'].notna().any()
+
     heavy_score = []
     light_score = []
 
-    for row in range(len(df)):
-        sequences = [
-            df['heavy'][row],
-            df['light'][row],
-        ]
+    if enable_batch:
+        # Batch processing: process multiple sequences together
+        from tqdm import tqdm
+        for batch_start in tqdm(range(0, len(df), batch_size), desc="Scoring with AntiBERTy (batch)"):
+            batch_end = min(batch_start + batch_size, len(df))
 
-        pll = antiberty.pseudo_log_likelihood(sequences, batch_size=batch_size)
+            # Collect all heavy sequences in batch
+            batch_heavy_seqs = df['heavy'].iloc[batch_start:batch_end].tolist()
+            heavy_ppls = compute_pll_batch_multi_seq(batch_heavy_seqs)
+            heavy_score.extend(heavy_ppls)
 
-        perplexity_h = math.exp(-pll.tolist()[0])
-        perplexity_l = math.exp(-pll.tolist()[1])
+            # Collect all light sequences in batch
+            if has_light:
+                batch_light_seqs = []
+                batch_light_valid = []
+                for i in range(batch_start, batch_end):
+                    light_seq = df['light'].iloc[i]
+                    if pd.notna(light_seq) and light_seq:
+                        batch_light_seqs.append(light_seq)
+                        batch_light_valid.append(True)
+                    else:
+                        batch_light_valid.append(False)
 
-        heavy_score.append(perplexity_h)
-        light_score.append(perplexity_l)
+                if batch_light_seqs:
+                    light_ppls = compute_pll_batch_multi_seq(batch_light_seqs)
+                    ppl_idx = 0
+                    for valid in batch_light_valid:
+                        if valid:
+                            light_score.append(light_ppls[ppl_idx])
+                            ppl_idx += 1
+                        else:
+                            light_score.append(None)
+                else:
+                    light_score.extend([None] * (batch_end - batch_start))
+            else:
+                light_score.extend([None] * (batch_end - batch_start))
+    else:
+        # Sequential processing: process one row at a time
+        for row in range(len(df)):
+            sequences = [
+                df['heavy'][row],
+                df['light'][row] if has_light else "",
+            ]
+
+            pll = antiberty.pseudo_log_likelihood(sequences, batch_size=batch_size)
+
+            perplexity_h = math.exp(-pll.tolist()[0])
+            heavy_score.append(perplexity_h)
+
+            if has_light and pd.notna(df['light'][row]) and df['light'][row]:
+                perplexity_l = math.exp(-pll.tolist()[1])
+                light_score.append(perplexity_l)
+            else:
+                light_score.append(None)
 
     df['heavy_perplexity'] = heavy_score
-    df['light_perplexity'] = light_score
 
-    df['average_perplexity'] = (df['heavy_perplexity'] + df['light_perplexity']) / 2
+    if has_light:
+        df['light_perplexity'] = light_score
+        df['average_perplexity'] = df.apply(
+            lambda row: (row['heavy_perplexity'] + row['light_perplexity']) / 2
+            if row['light_perplexity'] is not None
+            else row['heavy_perplexity'],
+            axis=1
+        )
+    else:
+        df['light_perplexity'] = None
+        df['average_perplexity'] = df['heavy_perplexity']
 
     return df
 
@@ -612,7 +747,7 @@ def mpnn_score(pdb):
     return perplexity
 
 
-def esm2_score(df, model_name='esm2_t33_650M_UR50D', device=None, batch_size=4, ism_weights_path=None):
+def esm2_score(df, model_name='esm2_t33_650M_UR50D', device=None, batch_size=4, ism_weights_path=None, enable_batch=True):
     """
     Score sequences using ESM2 or ISM models with pseudo-log-likelihood.
 
@@ -620,8 +755,9 @@ def esm2_score(df, model_name='esm2_t33_650M_UR50D', device=None, batch_size=4, 
         df: DataFrame with 'heavy' and optionally 'light' columns
         model_name: 'esm2_t33_650M_UR50D', 'esm2_t36_3B_UR50D', or 'ism'
         device: cuda/cpu device
-        batch_size: batch size for masked position processing
+        batch_size: batch size for processing sequences (when enable_batch=True) or masked positions (when enable_batch=False)
         ism_weights_path: path to ISM weights (only used when model_name='ism')
+        enable_batch: if True, batch multiple sequences together; if False, process one-by-one
 
     Returns:
         df with heavy_perplexity, light_perplexity (if applicable), average_perplexity
@@ -700,28 +836,103 @@ def esm2_score(df, model_name='esm2_t33_650M_UR50D', device=None, batch_size=4, 
         # Return average log probability
         return log_probs_sum / seq_len
 
+    def compute_pseudo_log_likelihood_batch(sequences, masked_batch_size=batch_size):
+        """Compute pseudo-log-likelihood for multiple sequences with batching."""
+        all_plls = []
+
+        # Tokenize all sequences together
+        data = [(f"seq_{i}", seq) for i, seq in enumerate(sequences)]
+        _, _, all_tokens = batch_converter(data)
+        all_tokens = all_tokens.to(device_obj)
+
+        for seq_idx, sequence in enumerate(sequences):
+            seq_len = len(sequence)
+            log_probs_sum = 0.0
+
+            # Create all masked variants for this sequence
+            masked_tokens_list = []
+            for pos in range(seq_len):
+                masked = all_tokens[seq_idx:seq_idx+1].clone()
+                # Position in tokens is offset by 1 due to BOS token
+                masked[0, pos + 1] = mask_idx
+                masked_tokens_list.append(masked)
+
+            # Process masked variants in sub-batches
+            for start in range(0, len(masked_tokens_list), masked_batch_size):
+                end = min(start + masked_batch_size, len(masked_tokens_list))
+                batch_masked = torch.cat(masked_tokens_list[start:end], dim=0)
+
+                with torch.no_grad():
+                    results = esm2_model(batch_masked, repr_layers=[], return_contacts=False)
+                    logits = results["logits"]
+
+                for i, pos in enumerate(range(start, end)):
+                    pos_logits = logits[i, pos + 1, :]
+                    log_probs = torch.log_softmax(pos_logits, dim=-1)
+                    true_token = all_tokens[seq_idx, pos + 1]
+                    log_probs_sum += log_probs[true_token].item()
+
+            all_plls.append(log_probs_sum / seq_len)
+
+        return all_plls
+
     # Check if light chain exists
     has_light = 'light' in df.columns and df['light'].notna().any()
 
     heavy_scores = []
     light_scores = []
 
-    for idx in tqdm(range(len(df)), desc=f"Scoring with {model_name}"):
-        # Score heavy chain
-        heavy_seq = df['heavy'].iloc[idx]
-        heavy_pll = compute_pseudo_log_likelihood(heavy_seq)
-        heavy_perplexity = math.exp(-heavy_pll)
-        heavy_scores.append(heavy_perplexity)
+    if enable_batch:
+        # Batch processing: process multiple sequences together
+        for batch_start in tqdm(range(0, len(df), batch_size), desc=f"Scoring with {model_name} (batch)"):
+            batch_end = min(batch_start + batch_size, len(df))
 
-        # Score light chain if exists
-        if has_light:
-            light_seq = df['light'].iloc[idx]
-            if pd.notna(light_seq) and light_seq:
-                light_pll = compute_pseudo_log_likelihood(light_seq)
-                light_perplexity = math.exp(-light_pll)
-            else:
-                light_perplexity = None
-            light_scores.append(light_perplexity)
+            # Process heavy chains
+            batch_heavy_seqs = df['heavy'].iloc[batch_start:batch_end].tolist()
+            batch_heavy_plls = compute_pseudo_log_likelihood_batch(batch_heavy_seqs)
+            heavy_scores.extend([math.exp(-pll) for pll in batch_heavy_plls])
+
+            # Process light chains if exists
+            if has_light:
+                batch_light_seqs = []
+                batch_light_valid = []
+                for i in range(batch_start, batch_end):
+                    light_seq = df['light'].iloc[i]
+                    if pd.notna(light_seq) and light_seq:
+                        batch_light_seqs.append(light_seq)
+                        batch_light_valid.append(True)
+                    else:
+                        batch_light_valid.append(False)
+
+                if batch_light_seqs:
+                    batch_light_plls = compute_pseudo_log_likelihood_batch(batch_light_seqs)
+                    pll_idx = 0
+                    for valid in batch_light_valid:
+                        if valid:
+                            light_scores.append(math.exp(-batch_light_plls[pll_idx]))
+                            pll_idx += 1
+                        else:
+                            light_scores.append(None)
+                else:
+                    light_scores.extend([None] * (batch_end - batch_start))
+    else:
+        # Sequential processing: process one sequence at a time
+        for idx in tqdm(range(len(df)), desc=f"Scoring with {model_name}"):
+            # Score heavy chain
+            heavy_seq = df['heavy'].iloc[idx]
+            heavy_pll = compute_pseudo_log_likelihood(heavy_seq)
+            heavy_perplexity = math.exp(-heavy_pll)
+            heavy_scores.append(heavy_perplexity)
+
+            # Score light chain if exists
+            if has_light:
+                light_seq = df['light'].iloc[idx]
+                if pd.notna(light_seq) and light_seq:
+                    light_pll = compute_pseudo_log_likelihood(light_seq)
+                    light_perplexity = math.exp(-light_pll)
+                else:
+                    light_perplexity = None
+                light_scores.append(light_perplexity)
 
     df['heavy_perplexity'] = heavy_scores
 
@@ -741,14 +952,15 @@ def esm2_score(df, model_name='esm2_t33_650M_UR50D', device=None, batch_size=4, 
     return df
 
 
-def ablang2_score(df, device=None, batch_size=16):
+def ablang2_score(df, device=None, batch_size=16, enable_batch=True):
     """
     Score sequences using AbLang2 paired model with pseudo-log-likelihood.
 
     Args:
         df: DataFrame with 'heavy' and optionally 'light' columns
         device: cuda/cpu device
-        batch_size: batch size for processing
+        batch_size: batch size for processing sequences (when enable_batch=True)
+        enable_batch: if True, batch multiple sequences together; if False, process one-by-one
 
     Returns:
         df with heavy_perplexity, light_perplexity (if applicable), average_perplexity
@@ -848,20 +1060,141 @@ def ablang2_score(df, device=None, batch_size=16):
 
         return heavy_perplexity, light_perplexity
 
+    def compute_pll_batch(heavy_light_pairs):
+        """
+        Compute pseudo-log-likelihood for multiple sequence pairs at once.
+        Based on reference implementation.
+        """
+        # Format sequences
+        seqs = []
+        heavy_lens = []
+        for h, l in heavy_light_pairs:
+            if l is not None and pd.notna(l):
+                seqs.append(f"{h}|{l}")
+                heavy_lens.append(len(h))
+            else:
+                seqs.append(h)
+                heavy_lens.append(len(h))
+
+        # Tokenize all sequences
+        labels = ablang_model.tokenizer(seqs, pad=True, w_extra_tkns=False, device=device)
+
+        # Get indices for non-special tokens for all sequences
+        special_tokens_tensor = torch.tensor(ablang_model.tokenizer.all_special_tokens, device=device)
+        idxs = (~torch.isin(labels, special_tokens_tensor)).nonzero()
+
+        # Group indices by sequence
+        seq_indices = {}
+        for idx_tensor in idxs:
+            seq_idx = idx_tensor[0].item()
+            if seq_idx not in seq_indices:
+                seq_indices[seq_idx] = []
+            seq_indices[seq_idx].append(idx_tensor[1].item())
+
+        # Create masked versions for all positions
+        all_masked_tokens = []
+        all_target_indices = []
+        all_target_labels = []
+
+        for seq_idx, token_indices in seq_indices.items():
+            masked_tokens = labels[seq_idx].repeat(len(token_indices), 1)
+            for num, idx in enumerate(token_indices):
+                masked_tokens[num, idx] = ablang_model.tokenizer.mask_token
+            all_masked_tokens.append(masked_tokens)
+            all_target_indices.append(token_indices)
+            all_target_labels.append(labels[seq_idx, token_indices])
+
+        # Concatenate all masked tokens
+        all_masked_tokens = torch.cat(all_masked_tokens, dim=0)
+
+        # Forward pass with sub-batching to avoid OOM
+        all_logits = []
+        sub_batch_size = batch_size * 50  # Larger sub-batch for efficiency
+        for i in range(0, len(all_masked_tokens), sub_batch_size):
+            batch_end = min(i + sub_batch_size, len(all_masked_tokens))
+            with torch.no_grad():
+                logits = ablang_model.AbLang(all_masked_tokens[i:batch_end])
+            all_logits.append(logits)
+        logits = torch.cat(all_logits, dim=0)
+        logits[:, :, ablang_model.tokenizer.all_special_tokens] = -float("inf")
+
+        # Calculate PLL for each sequence
+        heavy_plls = []
+        light_plls = []
+        start_idx = 0
+
+        for seq_idx, (h, l) in enumerate(heavy_light_pairs):
+            token_indices = seq_indices.get(seq_idx, [])
+            heavy_len = heavy_lens[seq_idx]
+
+            if len(token_indices) == 0:
+                heavy_plls.append(0)
+                light_plls.append(None)
+                continue
+
+            seq_logits = logits[start_idx:start_idx + len(token_indices)]
+            seq_logits_diag = torch.stack([seq_logits[num, idx] for num, idx in enumerate(token_indices)])
+            seq_labels = all_target_labels[seq_idx]
+
+            # Separate heavy and light scores based on position
+            heavy_log_probs = 0.0
+            light_log_probs = 0.0
+            heavy_count = 0
+            light_count = 0
+
+            for i, tok_idx in enumerate(token_indices):
+                log_prob = torch.log_softmax(seq_logits_diag[i], dim=-1)[seq_labels[i]].item()
+                if tok_idx < heavy_len:
+                    heavy_log_probs += log_prob
+                    heavy_count += 1
+                else:
+                    light_log_probs += log_prob
+                    light_count += 1
+
+            heavy_pll = heavy_log_probs / heavy_count if heavy_count > 0 else 0
+            heavy_plls.append(math.exp(-heavy_pll))
+
+            if light_count > 0:
+                light_pll = light_log_probs / light_count
+                light_plls.append(math.exp(-light_pll))
+            else:
+                light_plls.append(None)
+
+            start_idx += len(token_indices)
+
+        return heavy_plls, light_plls
+
     heavy_scores = []
     light_scores = []
 
-    for idx in tqdm(range(len(df)), desc="Scoring with AbLang2"):
-        heavy_seq = df['heavy'].iloc[idx]
+    if enable_batch:
+        # Batch processing: process multiple sequences together
+        for batch_start in tqdm(range(0, len(df), batch_size), desc="Scoring with AbLang2 (batch)"):
+            batch_end = min(batch_start + batch_size, len(df))
 
-        if has_light:
-            light_seq = df['light'].iloc[idx]
-            heavy_ppl, light_ppl = compute_pseudo_log_likelihood_paired(heavy_seq, light_seq)
-        else:
-            heavy_ppl, light_ppl = compute_pseudo_log_likelihood_paired(heavy_seq, None)
+            # Prepare pairs
+            pairs = []
+            for i in range(batch_start, batch_end):
+                heavy_seq = df['heavy'].iloc[i]
+                light_seq = df['light'].iloc[i] if has_light else None
+                pairs.append((heavy_seq, light_seq))
 
-        heavy_scores.append(heavy_ppl)
-        light_scores.append(light_ppl)
+            h_ppls, l_ppls = compute_pll_batch(pairs)
+            heavy_scores.extend(h_ppls)
+            light_scores.extend(l_ppls)
+    else:
+        # Sequential processing: process one sequence at a time
+        for idx in tqdm(range(len(df)), desc="Scoring with AbLang2"):
+            heavy_seq = df['heavy'].iloc[idx]
+
+            if has_light:
+                light_seq = df['light'].iloc[idx]
+                heavy_ppl, light_ppl = compute_pseudo_log_likelihood_paired(heavy_seq, light_seq)
+            else:
+                heavy_ppl, light_ppl = compute_pseudo_log_likelihood_paired(heavy_seq, None)
+
+            heavy_scores.append(heavy_ppl)
+            light_scores.append(light_ppl)
 
     df['heavy_perplexity'] = heavy_scores
 

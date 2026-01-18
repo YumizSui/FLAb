@@ -65,8 +65,8 @@ def _get_args():
 
     parser.add_argument("--device",
                       type=str,
-                      default='cpu',
-                      help="Device to use: 'cpu' (default) or 'cuda:0' for GPU")
+                      default=None,
+                      help="Device to use: 'cuda:0' for GPU (default: auto-detect GPU if available, else CPU) or 'cpu'")
 
     parser.add_argument("--output-dir",
                       type=str,
@@ -76,6 +76,15 @@ def _get_args():
     parser.add_argument("--ppl-only",
                       action='store_true',
                       help="Only output perplexity CSV file, skip plots and correlations")
+
+    parser.add_argument("--batch-size",
+                      type=int,
+                      default=32,
+                      help="Batch size for processing sequences (default: 32)")
+
+    parser.add_argument("--no-batch",
+                      action='store_true',
+                      help="Disable batching, process sequences one-by-one")
     return parser.parse_args()
 
 def _cli():
@@ -87,6 +96,8 @@ def _cli():
     device = args.device
     output_dir_arg = args.output_dir
     ppl_only = args.ppl_only
+    batch_size = args.batch_size
+    enable_batch = not args.no_batch
 
     # CREATE DIRECTORY PATH
 
@@ -135,13 +146,17 @@ def _cli():
     df = pd.read_csv(csv_path)
 
     # CALCULATE PERPLEXITY
+    # IgLM and ProGen don't use pseudo-log-likelihood, no batch changes
     if score_method == 'iglm':
         df = iglm_score(df)
 
     elif score_method == 'antiberty':
-        df = antiberty_score(df)
+        df = antiberty_score(df, batch_size=batch_size, device=device, enable_batch=enable_batch)
 
     elif score_method == 'progen':
+        # ProGen requires explicit device string, auto-detect if None
+        if device is None:
+            device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
         df = progen_score(df, model_variant, device)
 
     elif score_method == 'esm2':
@@ -152,7 +167,7 @@ def _cli():
             model_name = 'esm2_t36_3B_UR50D'
         else:
             model_name = 'esm2_t33_650M_UR50D'  # default
-        df = esm2_score(df, model_name=model_name, device=device)
+        df = esm2_score(df, model_name=model_name, device=device, batch_size=batch_size, enable_batch=enable_batch)
 
     elif score_method == 'ism':
         # ISM uses ESM2 architecture with custom weights
@@ -160,10 +175,11 @@ def _cli():
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             'envs', 'models', 'ism_t33_650M_uc30pdb', 'checkpoint.pth'
         )
-        df = esm2_score(df, model_name='ism', device=device, ism_weights_path=ism_weights_path)
+        df = esm2_score(df, model_name='ism', device=device, ism_weights_path=ism_weights_path,
+                        batch_size=batch_size, enable_batch=enable_batch)
 
     elif score_method == 'ablang2':
-        df = ablang2_score(df, device=device)
+        df = ablang2_score(df, device=device, batch_size=batch_size, enable_batch=enable_batch)
 
     # SAVE PERPLEXITY
     ppl_output_path = os.path.join(output_dir, f"{name_only}_ppl.csv")

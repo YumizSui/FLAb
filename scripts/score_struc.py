@@ -31,18 +31,29 @@ def _get_args():
     desc = ("""Script for scoring antibody sequences""")
     parser = argparse.ArgumentParser(description=desc)
 
-    parser.add_argument("csv_path",
+    parser.add_argument("--csv-path",
                       type=str,
+                      required=True,
                       help="csv file with heavy and light chain sequences, and fitness metric.")
 
-    parser.add_argument("score_method",
+    parser.add_argument("--score-method",
                       type=str,
-                      help="model for scoring (ex: iglm).")
+                      required=True,
+                      help="model for scoring (ex: esmif, pyrosetta, mpnn).")
 
-    parser.add_argument("device",
+    parser.add_argument("--device",
+                      type=str,
                       default='cpu',
-                      nargs='?',
-                      help="specify whether using cpu (default) or gpu (cuda:0)")
+                      help="device to use: 'cpu' (default) or 'cuda:0' for GPU")
+
+    parser.add_argument("--output-dir",
+                      type=str,
+                      default=None,
+                      help="Output directory path. If not specified, uses default score/ structure")
+
+    parser.add_argument("--ppl-only",
+                      action='store_true',
+                      help="Only output perplexity CSV file, skip plots and correlations")
     return parser.parse_args()
 
 def _cli():
@@ -51,10 +62,8 @@ def _cli():
     csv_path = args.csv_path
     score_method = args.score_method
     device = args.device
-
-    device_type = 'cuda' if torch.cuda.is_available(
-    ) and args.use_gpu else 'cpu'
-    device = torch.device(device_type)
+    output_dir_arg = args.output_dir
+    ppl_only = args.ppl_only
 
     # CREATE DIRECTORY PATH
 
@@ -65,18 +74,26 @@ def _cli():
     # remove file extension from filename
     name_only, extension = os.path.splitext(filename)
 
-    score_dir = 'score'
-    # create score/
-    dir_create(score_dir)
+    # Use provided output_dir or construct default path
+    if output_dir_arg:
+        output_dir = output_dir_arg
+        os.makedirs(output_dir, exist_ok=True)
+    else:
+        score_dir = 'score'
+        # create score/
+        dir_create(score_dir)
 
-    # check score/model
-    dir_create(score_dir, score_method)
+        # check score/model
+        dir_create(score_dir, score_method)
 
-    # create score/model/fitness
-    dir_create(score_dir, score_method, fitness_dir)
+        # create score/model/fitness
+        dir_create(score_dir, score_method, fitness_dir)
 
-    # check score/model/fitness/csv
-    dir_create(score_dir, score_method, fitness_dir, name_only)
+        # check score/model/fitness/csv
+        dir_create(score_dir, score_method, fitness_dir, name_only)
+
+        # construct the 'score/score_method/fitness/name/' directory path
+        output_dir = os.path.join('.', score_dir, score_method, fitness_dir, name_only)
 
     df_og = pd.read_csv(csv_path)
 
@@ -91,7 +108,7 @@ def _cli():
         if pdb_file.endswith(".pdb"):
             pdb_name = pdb_file.split('.')[0]
             pdb_list.append(extract_last_digits(pdb_name))
-            
+
             if score_method == 'esmif':
                 pdb_score.append(esmif_score(f'{pdb_dir}/{pdb_file}'))
             elif score_method == 'pyrosetta':
@@ -102,13 +119,17 @@ def _cli():
 
     df_scores['pdb_file'] = pdb_list
     df_scores['average_perplexity'] = pdb_score
-    
+
     df_order = df_scores.sort_values('pdb_file').reset_index(drop=True)
     df = pd.concat([df_og, df_order], axis=1)
 
-    # change to the 'score/score_method/fitness/name/' directory
-    output_dir = os.path.join('.', score_dir, score_method, fitness_dir, name_only)
-    os.chdir(output_dir)
+    # SAVE PERPLEXITY
+    ppl_output_path = os.path.join(output_dir, f"{name_only}_ppl.csv")
+    df.to_csv(ppl_output_path, index=False)
+
+    # If ppl_only flag is set, skip plots and correlations
+    if ppl_only:
+        return
 
     # PLOT PERPLEXITY
 
@@ -146,10 +167,8 @@ def _cli():
     plt.ylabel('average perplexity')
     plt.title(name_only)
 
-    plt.savefig(f"{name_only}_plot.png")
-
-    # SAVE PERPLEXITY
-    df.to_csv(f"{name_only}_ppl.csv", index=False)
+    plot_output_path = os.path.join(output_dir, f"{name_only}_plot.png")
+    plt.savefig(plot_output_path)
 
     # CALCULATE CORRELATION
     name_list, correlation_list, p_list = ['pearson', 'spearman', 'kendal tau'], [], []
@@ -172,8 +191,8 @@ def _cli():
     df_corr = pd.DataFrame({'correlation_name': name_list, 'value': correlation_list, 'p-value': p_list})
 
     # SAVE CORRELATION
-
-    df_corr.to_csv(f"{name_only}_corr.csv", index=False)
+    corr_output_path = os.path.join(output_dir, f"{name_only}_corr.csv")
+    df_corr.to_csv(corr_output_path, index=False)
 
 if __name__=='__main__':
     _cli()

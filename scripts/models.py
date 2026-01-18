@@ -1,5 +1,6 @@
 import math
 import os
+import pandas as pd
 
 # iglm
 try:
@@ -24,6 +25,18 @@ try:
 
 except ImportError:
     pass
+
+# esm2 (for sequence scoring)
+try:
+    import esm as esm_module
+except ImportError:
+    esm_module = None
+
+# ablang2
+try:
+    import ablang2
+except ImportError:
+    ablang2 = None
 
 # esm if
 try:
@@ -251,8 +264,17 @@ def antiberty_score(df, batch_size=16, device=None):
 
 def progen_score(df, model_version, device):
     ### main
-    # (0) constants
+    # Check if progen_extra is available
+    try:
+        from progen_extra import set_env, set_seed, create_model, create_tokenizer_custom, print_time, cross_entropy, log_likelihood
+    except ImportError as e:
+        raise ImportError(
+            "progen_extra module could not be imported. "
+            "Please ensure that progen dependencies are installed and the required paths are configured. "
+            f"Original error: {e}"
+        )
 
+    # (0) constants
     models_151M = [ 'progen2-small' ]
     models_754M = [ 'progen2-medium', 'progen2-oas', 'progen2-base' ]
     models_2B = [ 'progen2-large', 'progen2-BFD90' ]
@@ -286,7 +308,7 @@ def progen_score(df, model_version, device):
 
     def ce(tokens):
         with torch.no_grad():
-            with torch.cuda.amp.autocast(enabled=args.fp16):
+            with torch.cuda.amp.autocast(enabled=fp16):
                 target = torch.tensor(tokenizer.encode(tokens).ids).to(device)
                 logits = model(target, labels=target).logits
 
@@ -588,3 +610,271 @@ def mpnn_score(pdb):
     perplexity = math.exp(score)
 
     return perplexity
+
+
+def esm2_score(df, model_name='esm2_t33_650M_UR50D', device=None, batch_size=4, ism_weights_path=None):
+    """
+    Score sequences using ESM2 or ISM models with pseudo-log-likelihood.
+
+    Args:
+        df: DataFrame with 'heavy' and optionally 'light' columns
+        model_name: 'esm2_t33_650M_UR50D', 'esm2_t36_3B_UR50D', or 'ism'
+        device: cuda/cpu device
+        batch_size: batch size for masked position processing
+        ism_weights_path: path to ISM weights (only used when model_name='ism')
+
+    Returns:
+        df with heavy_perplexity, light_perplexity (if applicable), average_perplexity
+    """
+    import torch
+    from tqdm import tqdm
+
+    if esm_module is None:
+        raise ImportError("ESM is not installed. Please install with: pip install fair-esm")
+
+    # Device setup
+    if device is None:
+        device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+    device_obj = torch.device(device)
+
+    # Load model
+    if model_name == 'esm2_t33_650M_UR50D':
+        esm2_model, alphabet = esm_module.pretrained.esm2_t33_650M_UR50D()
+    elif model_name == 'esm2_t36_3B_UR50D':
+        esm2_model, alphabet = esm_module.pretrained.esm2_t36_3B_UR50D()
+    elif model_name == 'ism':
+        # ISM uses ESM2 architecture with different weights
+        esm2_model, alphabet = esm_module.pretrained.esm2_t33_650M_UR50D()
+        if ism_weights_path is not None:
+            ckpt = torch.load(ism_weights_path, map_location=device_obj)
+            esm2_model.load_state_dict(ckpt)
+    else:
+        raise ValueError(f"Unknown model: {model_name}")
+
+    esm2_model = esm2_model.to(device_obj)
+    esm2_model.eval()
+
+    batch_converter = alphabet.get_batch_converter()
+    mask_idx = alphabet.mask_idx
+
+    def compute_pseudo_log_likelihood(sequence, seq_batch_size=batch_size):
+        """Compute pseudo-log-likelihood for a single sequence."""
+        # Tokenize the original sequence
+        data = [("seq", sequence)]
+        _, _, tokens = batch_converter(data)
+        tokens = tokens.to(device_obj)
+
+        seq_len = len(sequence)
+        log_probs_sum = 0.0
+
+        # Process in batches of masked positions
+        for start_pos in range(0, seq_len, seq_batch_size):
+            end_pos = min(start_pos + seq_batch_size, seq_len)
+            batch_positions = list(range(start_pos, end_pos))
+
+            # Create masked versions for each position in this batch
+            masked_tokens_list = []
+            for pos in batch_positions:
+                masked = tokens.clone()
+                # Position in tokens is offset by 1 due to BOS token
+                masked[0, pos + 1] = mask_idx
+                masked_tokens_list.append(masked)
+
+            masked_batch = torch.cat(masked_tokens_list, dim=0)
+
+            with torch.no_grad():
+                results = esm2_model(masked_batch, repr_layers=[], return_contacts=False)
+                logits = results["logits"]
+
+            # Extract log probabilities for the masked positions
+            for i, pos in enumerate(batch_positions):
+                # Get logits at the masked position (offset by 1 for BOS)
+                pos_logits = logits[i, pos + 1, :]
+                log_probs = torch.log_softmax(pos_logits, dim=-1)
+
+                # Get the true token
+                true_token = tokens[0, pos + 1]
+                log_prob = log_probs[true_token].item()
+                log_probs_sum += log_prob
+
+        # Return average log probability
+        return log_probs_sum / seq_len
+
+    # Check if light chain exists
+    has_light = 'light' in df.columns and df['light'].notna().any()
+
+    heavy_scores = []
+    light_scores = []
+
+    for idx in tqdm(range(len(df)), desc=f"Scoring with {model_name}"):
+        # Score heavy chain
+        heavy_seq = df['heavy'].iloc[idx]
+        heavy_pll = compute_pseudo_log_likelihood(heavy_seq)
+        heavy_perplexity = math.exp(-heavy_pll)
+        heavy_scores.append(heavy_perplexity)
+
+        # Score light chain if exists
+        if has_light:
+            light_seq = df['light'].iloc[idx]
+            if pd.notna(light_seq) and light_seq:
+                light_pll = compute_pseudo_log_likelihood(light_seq)
+                light_perplexity = math.exp(-light_pll)
+            else:
+                light_perplexity = None
+            light_scores.append(light_perplexity)
+
+    df['heavy_perplexity'] = heavy_scores
+
+    if has_light:
+        df['light_perplexity'] = light_scores
+        # Calculate average, handling None values
+        df['average_perplexity'] = df.apply(
+            lambda row: (row['heavy_perplexity'] + row['light_perplexity']) / 2
+            if row['light_perplexity'] is not None
+            else row['heavy_perplexity'],
+            axis=1
+        )
+    else:
+        df['light_perplexity'] = None
+        df['average_perplexity'] = df['heavy_perplexity']
+
+    return df
+
+
+def ablang2_score(df, device=None, batch_size=16):
+    """
+    Score sequences using AbLang2 paired model with pseudo-log-likelihood.
+
+    Args:
+        df: DataFrame with 'heavy' and optionally 'light' columns
+        device: cuda/cpu device
+        batch_size: batch size for processing
+
+    Returns:
+        df with heavy_perplexity, light_perplexity (if applicable), average_perplexity
+    """
+    import torch
+    from tqdm import tqdm
+
+    if ablang2 is None:
+        raise ImportError("AbLang2 is not installed. Please install with: pip install ablang2")
+
+    # Device setup
+    if device is None:
+        device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+
+    # Initialize AbLang2 paired model
+    ablang_model = ablang2.pretrained(model_to_use='ablang2-paired', random_init=False, ncpu=1, device=device)
+
+    # Get aa_to_token mapping
+    aa_to_token = ablang_model.tokenizer.aa_to_token
+    mask_char = '*'  # AbLang2 uses '*' as mask token
+
+    # Check if light chain exists
+    has_light = 'light' in df.columns and df['light'].notna().any()
+
+    def compute_pseudo_log_likelihood_paired(heavy_seq, light_seq=None):
+        """Compute pseudo-log-likelihood for paired or heavy-only sequence."""
+        # Format sequence for AbLang2
+        if light_seq is not None and pd.notna(light_seq):
+            seq = f"{heavy_seq}|{light_seq}"
+            heavy_len = len(heavy_seq)
+            light_len = len(light_seq)
+        else:
+            seq = heavy_seq
+            heavy_len = len(heavy_seq)
+            light_len = 0
+
+        # Total sequence length (including '|' separator if present)
+        total_len = len(seq)
+
+        # Compute pseudo-log-likelihood by masking each position
+        log_probs_heavy = 0.0
+        log_probs_light = 0.0
+
+        # Create list of positions to mask (skip the '|' separator)
+        positions_to_mask = []
+        for i, char in enumerate(seq):
+            if char != '|':
+                positions_to_mask.append(i)
+
+        # Process in batches
+        for start_idx in range(0, len(positions_to_mask), batch_size):
+            end_idx = min(start_idx + batch_size, len(positions_to_mask))
+            batch_positions = positions_to_mask[start_idx:end_idx]
+
+            masked_seqs = []
+            true_aas = []
+            for pos in batch_positions:
+                # Create masked sequence
+                seq_list = list(seq)
+                true_aa = seq_list[pos]
+                seq_list[pos] = mask_char
+                masked_seqs.append(''.join(seq_list))
+                true_aas.append(true_aa)
+
+            # Tokenize masked sequences
+            masked_tokenized = ablang_model.tokenizer(masked_seqs, pad=True, w_extra_tkns=False, device=device)
+
+            # Get likelihoods
+            with torch.no_grad():
+                likelihoods = ablang_model.AbLang(masked_tokenized)
+
+            # Extract log-probs for masked positions
+            for i, (pos, true_aa) in enumerate(zip(batch_positions, true_aas)):
+                if true_aa in aa_to_token:
+                    true_idx = aa_to_token[true_aa]
+                    # Get log probability at the masked position
+                    log_prob = torch.log_softmax(likelihoods[i, pos, :], dim=-1)[true_idx].item()
+
+                    # Determine if this is heavy or light chain
+                    # Heavy chain is before '|', light chain is after
+                    if light_seq is None:
+                        log_probs_heavy += log_prob
+                    elif pos < heavy_len:
+                        log_probs_heavy += log_prob
+                    else:
+                        log_probs_light += log_prob
+
+        # Calculate perplexities
+        heavy_pll = log_probs_heavy / heavy_len if heavy_len > 0 else 0
+        heavy_perplexity = math.exp(-heavy_pll)
+
+        if light_len > 0:
+            light_pll = log_probs_light / light_len
+            light_perplexity = math.exp(-light_pll)
+        else:
+            light_perplexity = None
+
+        return heavy_perplexity, light_perplexity
+
+    heavy_scores = []
+    light_scores = []
+
+    for idx in tqdm(range(len(df)), desc="Scoring with AbLang2"):
+        heavy_seq = df['heavy'].iloc[idx]
+
+        if has_light:
+            light_seq = df['light'].iloc[idx]
+            heavy_ppl, light_ppl = compute_pseudo_log_likelihood_paired(heavy_seq, light_seq)
+        else:
+            heavy_ppl, light_ppl = compute_pseudo_log_likelihood_paired(heavy_seq, None)
+
+        heavy_scores.append(heavy_ppl)
+        light_scores.append(light_ppl)
+
+    df['heavy_perplexity'] = heavy_scores
+
+    if has_light:
+        df['light_perplexity'] = light_scores
+        df['average_perplexity'] = df.apply(
+            lambda row: (row['heavy_perplexity'] + row['light_perplexity']) / 2
+            if row['light_perplexity'] is not None
+            else row['heavy_perplexity'],
+            axis=1
+        )
+    else:
+        df['light_perplexity'] = None
+        df['average_perplexity'] = df['heavy_perplexity']
+
+    return df

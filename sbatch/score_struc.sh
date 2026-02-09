@@ -23,4 +23,4 @@ if [ "$score_method" = "mpnn" ]; then
         source /home/mchungy1/data_jgray21/mchungy1/miniconda3/bin/activate /home/mchungy1/data_jgray21/mchungy1/miniconda3/envs/mlfold
 fi
 
-python scripts/score_struc.py $csv_path $score_method $device
+python scripts/score_struc.py --csv-path $csv_path --score-method $score_method --device $device

@@ -22,4 +22,8 @@ if [ "$score_method" = "progen" ]; then
         source /home/mchungy1/data_jgray21/mchungy1/miniconda3/bin/activate /scratch16/jgray21/mchungy1/conda_envs/progen
 fi
 
-python scripts/score_seq.py $csv_path $score_method $progen_model $device
+if [ "$progen_model" = "None" ] || [ -z "$progen_model" ]; then
+    python scripts/score_seq.py --csv-path $csv_path --score-method $score_method --device $device
+else
+    python scripts/score_seq.py --csv-path $csv_path --score-method $score_method --model-variant $progen_model --device $device
+fi

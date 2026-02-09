@@ -1,0 +1,53 @@
+Antibody_set,Metric,Category,Folder_name,Structure_path,Fasta_count
+GSK CA1,Exp_ug_per_mL,expression,gsk2023_AM14_exp,structure/expression/gsk2023_AM14_exp,34
+GSK CA1,Tm_C,tm,gsk2023_AM14_Tm,structure/tm/gsk2023_AM14_Tm,34
+GSK CA1,Binding_nM,binding,gsk2023_AM14_Kd,structure/binding/gsk2023_AM14_Kd,29
+GSK CA2,Exp_ug_per_mL,expression,gsk2023_D25_exp,structure/expression/gsk2023_D25_exp,25
+GSK CA2,Tm_C,tm,gsk2023_D25_Tm,structure/tm/gsk2023_D25_Tm,22
+GSK CA2,Binding_nM,binding,gsk2023_D25_Kd,structure/binding/gsk2023_D25_Kd,22
+GSK CA3,Exp_ug_per_mL,expression,gsk2023_MOTA_exp,structure/expression/gsk2023_MOTA_exp,11
+GSK CA3,Tm_C,tm,gsk2023_MOTA_Tm,structure/tm/gsk2023_MOTA_Tm,8
+GSK CA3,Binding_nM,binding,gsk2023_MOTA_Kd,structure/binding/gsk2023_MOTA_Kd,11
+GSK CA4,Exp_ug_per_mL,expression,gsk2023_RSB1_exp,structure/expression/gsk2023_RSB1_exp,24
+GSK CA4,Tm_C,tm,gsk2023_RSB1_Tm,structure/tm/gsk2023_RSB1_Tm,24
+GSK CA4,Binding_nM,binding,gsk2023_RSB1_Kd,structure/binding/gsk2023_RSB1_Kd,19
+Hie C143,Tm_C,tm,Hie2022_C143_Tm,structure/tm/Hie2022_C143_Tm,2
+Hie C143,Binding_nM,binding,Hie2022_C143_Kd,structure/binding/Hie2022_C143_Kd,16
+Hie mAb114,Tm_C,tm,Hie2022_mAb114_Tm,structure/tm/Hie2022_mAb114_Tm,7
+Hie mAb114,Binding_nM,binding,Hie2022_mAb114_Kd,structure/binding/Hie2022_mAb114_Kd,20
+Hie mAb114 UCA,Tm_C,tm,Hie2022_mAb114UCA_Tm,structure/tm/Hie2022_mAb114UCA_Tm,2
+Hie MEDI8852,Tm_C,tm,Hie2022_MEDI8852_Tm,structure/tm/Hie2022_MEDI8852_Tm,2
+Hie MEDI8852,Binding_nM,binding,Hie2022_MEDI8852_Kd,structure/binding/Hie2022_MEDI8852_Kd,15
+Hie MEDI8852 UCA,Tm_C,tm,Hie2022_MEDI8852UCA_Tm,structure/tm/Hie2022_MEDI8852UCA_Tm,6
+Hie MEDI8852 UCA,Binding_nM,binding,Hie2022_MEDI8852UCA_Kd,structure/binding/Hie2022_MEDI8852UCA_Kd,20
+Hie REGN10987,Tm_C,tm,Hie2022_REGN10987_Tm,structure/tm/Hie2022_REGN10987_Tm,8
+Hie REGN10987,Binding_nM,binding,Hie2022_REGN10987_Kd,structure/binding/Hie2022_REGN10987_Kd,13
+Hie S309,Tm_C,tm,Hie2022_S309_Tm,structure/tm/Hie2022_S309_Tm,10
+Hie S309,Binding_nM,binding,Hie2022_S309_Kd,structure/binding/Hie2022_S309_Kd,19
+Koenig G6,Exp_ug_per_mL,expression,Koenig2017_g6_er,structure/expression/Koenig2017_g6_er,3093
+Koenig G6,Binding_nM,binding,Koenig2017_g6_Kd,structure/binding/Koenig2017_g6_Kd,3035
+Marks imm,Imm_pct_ADA,immunogenicity,Prihoda2021_mAb_immunogenicity,structure/immunogenicity/Prihoda2021_mAb_immunogenicity,217
+Rosace Adalimumab,Tm_C,tm,Rosace2023_Adalimumab_Tm,structure/tm/Rosace2023_Adalimumab_Tm,14
+Rosace Adalimumab,Binding_nM,binding,Rosace2023_Adalimumab_Kd,structure/binding/Rosace2023_Adalimumab_Kd,14
+Rosace Adalimumab,Poly_min,polyreactivity,Rosace2023_Adalimumab_CIC,structure/polyreactivity/Rosace2023_Adalimumab_CIC,14
+Rosace CD3022,Tm_C,tm,Rosace2023_CR3022_Tm,structure/tm/Rosace2023_CR3022_Tm,6
+Rosace CD3022,Binding_nM,binding,Rosace2023_CR3022_Kd,structure/binding/Rosace2023_CR3022_Kd,6
+Rosace CD3022,Poly_min,polyreactivity,Rosace2023_CR3022_CIC,structure/polyreactivity/Rosace2023_CR3022_CIC,6
+Rosace Golimumab,Tm_C,tm,Rosace2023_Golimumab_Tm,structure/tm/Rosace2023_Golimumab_Tm,5
+Rosace Golimumab,Binding_nM,binding,Rosace2023_Golimumab_Kd,structure/binding/Rosace2023_Golimumab_Kd,5
+Rosace Golimumab,Poly_min,polyreactivity,Rosace2023_Golimumab_CIC,structure/polyreactivity/Rosace2023_Golimumab_CIC,5
+Shane. Trast. multi,Binding_nM,binding,Shanehsazzadeh2023_trastuzumab_multi_kd,structure/binding/Shanehsazzadeh2023_trastuzumab_multi_kd,24
+Shane. Trast. zero,Binding_nM,binding,Shanehsazzadeh2023_trastuzumab_zero_kd,structure/binding/Shanehsazzadeh2023_trastuzumab_zero_kd,422
+Warszawski D44,Binding_nM,binding,Warszawski2019_d44_Kd,structure/binding/Warszawski2019_d44_Kd,2048
+Wittrup CST,Exp_ug_per_mL,expression,Wittrup2017_CST_HEK,structure/expression/Wittrup2017_CST_HEK,137
+Wittrup CST,Exp_ug_per_mL,expression,Wittrup2017_CST_BVP,structure/expression/Wittrup2017_CST_BVP,137
+Wittrup CST,Tm_C,tm,Wittrup2017_CST_Tm,structure/tm/Wittrup2017_CST_Tm,137
+Wittrup CST,Agg_Wv_shift,aggregation,Wittrup2017_CST_ACSINS,structure/aggregation/Wittrup2017_CST_ACSINS,137
+Wittrup CST,Agg_Wv_shift,aggregation,Wittrup2017_CST_CSI,structure/aggregation/Wittrup2017_CST_CSI,137
+Wittrup CST,Agg_Wv_shift,aggregation,Wittrup2017_CST_HIC,structure/aggregation/Wittrup2017_CST_HIC,137
+Wittrup CST,Agg_Wv_shift,aggregation,Wittrup2017_CST_SAS,structure/aggregation/Wittrup2017_CST_SAS,137
+Wittrup CST,Agg_Wv_shift,aggregation,Wittrup2017_CST_SGAC,structure/aggregation/Wittrup2017_CST_SGAC,137
+Wittrup CST,Agg_Wv_shift,aggregation,Wittrup2017_CST_SMAC,structure/aggregation/Wittrup2017_CST_SMAC,137
+Wittrup CST,Poly_min,polyreactivity,Wittrup2017_CST_CIC,structure/polyreactivity/Wittrup2017_CST_CIC,137
+Wittrup CST,Poly_min,polyreactivity,Wittrup2017_CST_ELISA,structure/polyreactivity/Wittrup2017_CST_ELISA,137
+Wittrup CST,Poly_min,polyreactivity,Wittrup2017_CST_PSR,structure/polyreactivity/Wittrup2017_CST_PSR,137

@@ -5,7 +5,6 @@ import pandas as pd
 import seaborn as sns
 import numpy as np
 import matplotlib.pyplot as plt
-import torch
 import re
 
 import scipy.stats as stats
@@ -13,7 +12,7 @@ from scipy.stats import pearsonr
 from scipy.stats import spearmanr
 from scipy.stats import kendalltau
 
-from models import esmif_score, pyrosetta_score, mpnn_score
+from models import esmif_score, pyrosetta_score, mpnn_score, sablm_score
 from extra import dir_create, extract_last_digits
 
 """
@@ -39,7 +38,7 @@ def _get_args():
     parser.add_argument("--score-method",
                       type=str,
                       required=True,
-                      help="model for scoring (ex: esmif, pyrosetta, mpnn).")
+                      help="model for scoring (ex: esmif, pyrosetta, mpnn, sablm).")
 
     parser.add_argument("--device",
                       type=str,
@@ -54,6 +53,26 @@ def _get_args():
     parser.add_argument("--ppl-only",
                       action='store_true',
                       help="Only output perplexity CSV file, skip plots and correlations")
+
+    parser.add_argument("--variant",
+                      type=str,
+                      default=None,
+                      help="Model variant (for sablm: 'str' for structure, 'nostr' for sequence-only)")
+
+    parser.add_argument("--structure-dir",
+                      type=str,
+                      default=None,
+                      help="Directory containing structure files (default: auto-constructed from CSV path)")
+
+    parser.add_argument("--checkpoint",
+                      type=str,
+                      default="poet2_ab_enc_pretrain",
+                      help="PoET-2 checkpoint name or path (for sablm models)")
+
+    parser.add_argument("--pll-batch-size",
+                      type=int,
+                      default=64,
+                      help="Batch size for PLL computation in sablm (default: 64)")
     return parser.parse_args()
 
 def _cli():
@@ -64,6 +83,10 @@ def _cli():
     device = args.device
     output_dir_arg = args.output_dir
     ppl_only = args.ppl_only
+    variant = args.variant
+    structure_dir_arg = args.structure_dir
+    checkpoint = args.checkpoint
+    pll_batch_size = args.pll_batch_size
 
     # CREATE DIRECTORY PATH
 
@@ -98,27 +121,80 @@ def _cli():
     df_og = pd.read_csv(csv_path)
 
     # path to PDB files
-    structure_dir ='structure'
-    pdb_dir = f'{structure_dir}/{fitness_dir}/{name_only}'
+    if structure_dir_arg:
+        pdb_dir = structure_dir_arg
+    else:
+        structure_dir ='structure'
+        pdb_dir = f'{structure_dir}/{fitness_dir}/{name_only}'
 
-    df_scores = pd.DataFrame()
-    pdb_list, pdb_score = [], []
+    # Collect all PDB files (including in subdirectories)
+    pdb_files = []
+    for root, dirs, files in os.walk(pdb_dir):
+        for file in files:
+            if file.endswith(".pdb"):
+                pdb_files.append(os.path.join(root, file))
 
-    for pdb_file in os.listdir(pdb_dir):
-        if pdb_file.endswith(".pdb"):
+    # Sort PDBs by their numeric ID for deterministic chunk ordering
+    pdb_files.sort(key=lambda p: extract_last_digits(os.path.splitext(os.path.basename(p))[0]))
+
+    # Process in chunks with tmp checkpoints
+    CHUNK_SIZE = 100
+    tmp_dir = os.path.join(output_dir, "tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    all_chunk_files = []
+    for chunk_start in range(0, len(pdb_files), CHUNK_SIZE):
+        chunk_end = min(chunk_start + CHUNK_SIZE, len(pdb_files))
+        tmp_path = os.path.join(tmp_dir, f"{chunk_start:04d}.csv")
+        all_chunk_files.append(tmp_path)
+
+        if os.path.exists(tmp_path):
+            print(f"SKIP chunk {chunk_start:04d}: {tmp_path}")
+            continue
+
+        chunk_pdb_list = []
+        chunk_pdb_score = []
+
+        for pdb_path in pdb_files[chunk_start:chunk_end]:
+            pdb_file = os.path.basename(pdb_path)
             pdb_name = pdb_file.split('.')[0]
-            pdb_list.append(extract_last_digits(pdb_name))
+            chunk_pdb_list.append(extract_last_digits(pdb_name))
 
             if score_method == 'esmif':
-                pdb_score.append(esmif_score(f'{pdb_dir}/{pdb_file}'))
+                chunk_pdb_score.append(esmif_score(pdb_path))
             elif score_method == 'pyrosetta':
-                # although pyrosetta E is not perplexity, I keep this notation for simplicity downstream
-                pdb_score.append(pyrosetta_score(f'{pdb_dir}/{pdb_file}'))
+                chunk_pdb_score.append(pyrosetta_score(pdb_path))
             elif score_method == 'mpnn':
-                pdb_score.append(mpnn_score(f'{pdb_dir}/{pdb_file}'))
+                chunk_pdb_score.append(mpnn_score(pdb_path))
+            elif score_method == 'sablm':
+                row_id = extract_last_digits(pdb_name)
+                heavy_seq = df_og.loc[row_id, 'heavy']
+                light_seq = df_og.loc[row_id, 'light']
 
-    df_scores['pdb_file'] = pdb_list
-    df_scores['average_perplexity'] = pdb_score
+                if variant == 'nostr':
+                    use_structure = False
+                elif variant == 'str':
+                    use_structure = True
+                else:
+                    use_structure = True
+
+                chunk_pdb_score.append(sablm_score(
+                    pdb_path=pdb_path,
+                    heavy_seq=heavy_seq,
+                    light_seq=light_seq,
+                    use_structure_info=use_structure,
+                    checkpoint=checkpoint,
+                    device=device if device else 'cuda',
+                    pll_batch_size=pll_batch_size,
+                ))
+
+        chunk_df = pd.DataFrame({"pdb_file": chunk_pdb_list, "average_perplexity": chunk_pdb_score})
+        chunk_df.to_csv(tmp_path, index=False)
+        print(f"SAVED chunk {chunk_start:04d}: {tmp_path} ({len(chunk_pdb_list)} PDBs)")
+
+    # Concat all chunks and produce final output
+    all_chunks = [pd.read_csv(p) for p in all_chunk_files]
+    df_scores = pd.concat(all_chunks, ignore_index=True)
 
     df_order = df_scores.sort_values('pdb_file').reset_index(drop=True)
     df = pd.concat([df_og, df_order], axis=1)

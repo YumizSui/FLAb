@@ -1,0 +1,45 @@
+Antibody_set,Metric,Table_count,Data_CSV_rows,Structure_fasta,Table_vs_Data,Table_vs_Structure,Data_vs_Structure
+GSK CA1,Binding_nM,29,29,29,OK,OK,OK
+GSK CA1,Exp_ug_per_mL,34,34,34,OK,OK,OK
+GSK CA1,Tm_C,34,34,34,OK,OK,OK
+GSK CA2,Binding_nM,22,22,22,OK,OK,OK
+GSK CA2,Exp_ug_per_mL,25,25,25,OK,OK,OK
+GSK CA2,Tm_C,22,22,22,OK,OK,OK
+GSK CA3,Binding_nM,11,11,11,OK,OK,OK
+GSK CA3,Exp_ug_per_mL,11,11,11,OK,OK,OK
+GSK CA3,Tm_C,8,8,8,OK,OK,OK
+GSK CA4,Binding_nM,19,19,19,OK,OK,OK
+GSK CA4,Exp_ug_per_mL,24,24,24,OK,OK,OK
+GSK CA4,Tm_C,24,24,24,OK,OK,OK
+Hie C143,Binding_nM,16,16,16,OK,OK,OK
+Hie C143,Tm_C,2,2,2,OK,OK,OK
+Hie MEDI8852,Binding_nM,15,15,15,OK,OK,OK
+Hie MEDI8852,Tm_C,2,2,2,OK,OK,OK
+Hie MEDI8852 UCA,Binding_nM,20,20,20,OK,OK,OK
+Hie MEDI8852 UCA,Tm_C,6,6,6,OK,OK,OK
+Hie REGN10987,Binding_nM,13,13,13,OK,OK,OK
+Hie REGN10987,Tm_C,8,8,8,OK,OK,OK
+Hie S309,Binding_nM,19,19,19,OK,OK,OK
+Hie S309,Tm_C,10,10,10,OK,OK,OK
+Hie mAb114,Binding_nM,20,20,20,OK,OK,OK
+Hie mAb114,Tm_C,7,7,7,OK,OK,OK
+Hie mAb114 UCA,Tm_C,2,2,2,OK,OK,OK
+Koenig G6,Binding_nM,4275,4275,3035,OK,MISMATCH,MISMATCH
+Koenig G6,Exp_ug_per_mL,4275,4275,3093,OK,MISMATCH,MISMATCH
+Marks imm,Imm_pct_ADA,217,217,217,OK,OK,OK
+Rosace Adalimumab,Binding_nM,14,14,14,OK,OK,OK
+Rosace Adalimumab,Poly_min,14,14,14,OK,OK,OK
+Rosace Adalimumab,Tm_C,14,14,14,OK,OK,OK
+Rosace CD3022,Binding_nM,6,6,6,OK,OK,OK
+Rosace CD3022,Poly_min,6,6,6,OK,OK,OK
+Rosace CD3022,Tm_C,6,6,6,OK,OK,OK
+Rosace Golimumab,Binding_nM,5,5,5,OK,OK,OK
+Rosace Golimumab,Poly_min,5,5,5,OK,OK,OK
+Rosace Golimumab,Tm_C,5,5,5,OK,OK,OK
+Shane. Trast. multi,Binding_nM,24,24,24,OK,OK,OK
+Shane. Trast. zero,Binding_nM,422,423,422,MISMATCH,OK,MISMATCH
+Warszawski D44,Binding_nM,2049,2048,2048,MISMATCH,MISMATCH,OK
+Wittrup CST,Agg_Wv_shift,822,822,822,OK,OK,OK
+Wittrup CST,Exp_ug_per_mL,274,274,274,OK,OK,OK
+Wittrup CST,Poly_min,411,411,411,OK,OK,OK
+Wittrup CST,Tm_C,137,137,137,OK,OK,OK

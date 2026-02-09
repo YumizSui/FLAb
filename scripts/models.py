@@ -69,12 +69,15 @@ try:
     from mpnn_extra import *
 
     # clone github repo
-    sys.path.append('/home/mchungy1/scr4_jgray21/mchungy1/AbDesign/models/ProteinMPNN')
+    sys.path.append('/home/kfurui/workspace/FLAb/envs/repos/ProteinMPNN')
     from protein_mpnn_utils import loss_nll, loss_smoothed, gather_edges, gather_nodes, gather_nodes_t, cat_neighbors_nodes, _scores, _S_to_seq, tied_featurize, parse_PDB
     from protein_mpnn_utils import StructureDataset, StructureDatasetPDB, ProteinMPNN
 
 except ImportError:
     pass
+
+# sablm (PoET-2) model cache
+_sablm_model_cache = {}
 
 
 def iglm_score(df):
@@ -238,7 +241,9 @@ def antiberty_score(df, batch_size=16, device=None, enable_batch=True):
             "pip install antiberty"
         )
 
-    def compute_pll_batch_multi_seq(sequences_list, internal_batch_size=batch_size):
+    def compute_pll_batch_multi_seq(sequences_list, internal_batch_size=None):
+        if internal_batch_size is None:
+            internal_batch_size = batch_size
         """
         Process multiple sequences with batched masked position computation.
         sequences_list: list of sequences
@@ -311,8 +316,8 @@ def antiberty_score(df, batch_size=16, device=None, enable_batch=True):
             )[:, 1:-1].to(device_obj)
 
             nll = torch.nn.functional.cross_entropy(
-                seq_logits_diag.unsqueeze(0),
-                labels,
+                seq_logits_diag,  # [L, vocab_size]
+                labels.squeeze(0),  # [1, L] -> [L]
                 reduction="mean",
             )
             pll = -nll.item()
@@ -562,6 +567,19 @@ def pyrosetta_score(pdb):
     return(sfxn(pose))
 
 def mpnn_score(pdb):
+    import torch
+    import numpy as np
+    import copy
+    import sys
+    from pathlib import Path
+
+    # Get ProteinMPNN path relative to this script
+    script_dir = Path(__file__).parent.parent  # FLAb directory
+    proteinmpnn_dir = script_dir / "envs" / "repos" / "ProteinMPNN"
+    sys.path.append(str(proteinmpnn_dir))
+
+    from protein_mpnn_utils import ProteinMPNN, parse_PDB, StructureDatasetPDB, tied_featurize, _scores, _S_to_seq
+    from mpnn_extra import make_tied_positions_for_homomers
 
     pdb_path = pdb
 
@@ -573,7 +591,7 @@ def mpnn_score(pdb):
     # standard deviation of Gaussian noise to add to backbone atoms
     backbone_noise=0.00
 
-    path_to_model_weights='/home/mchungy1/scr4_jgray21/mchungy1/AbDesign/models/ProteinMPNN/vanilla_model_weights'
+    path_to_model_weights = str(proteinmpnn_dir / "vanilla_model_weights")
     hidden_dim = 128
     num_layers = 3
     model_folder_path = path_to_model_weights
@@ -745,6 +763,370 @@ def mpnn_score(pdb):
     perplexity = math.exp(score)
 
     return perplexity
+
+def sablm_score(pdb_path, heavy_seq, light_seq, use_structure_info=True,
+                checkpoint="poet2_ab_enc_pretrain", heavy_chain="H", light_chain="L", device="cuda",
+                compute_mode="pll", pll_batch_size=64):
+    """
+    Score antibody using PoET-2 (sablm) with structure information.
+
+    Requirements:
+        - Must run with PoET-2 environment activated
+        - source /home/kfurui/workspace/AbEval/PoET-2/.venv/bin/activate
+
+    Args:
+        pdb_path: Path to PDB file
+        heavy_seq: VH sequence from CSV
+        light_seq: VL sequence from CSV
+        use_structure_info: Use atomx/plddt/3Di (True) or sequence-only (False)
+        checkpoint: PoET-2 checkpoint name
+        heavy_chain: Heavy chain ID in PDB (default "H")
+        light_chain: Light chain ID in PDB (default "L")
+        device: Device to use (cuda or cpu)
+        compute_mode: "pll" for pseudo-log-likelihood (default) or "confidence" for unmasked likelihood
+
+    Returns:
+        Perplexity score (float)
+    """
+    import sys
+    from pathlib import Path
+    import numpy as np
+    import torch
+    import torch.nn.functional as F
+
+    # Add PoET-2 paths to sys.path
+    # Get PoET-2 root relative to this script's location
+    script_dir = Path(__file__).parent.parent  # FLAb directory
+    POET2_ROOT = script_dir / "PoET-2"
+    sys.path.insert(0, str(POET2_ROOT / "src"))
+    sys.path.insert(0, str(POET2_ROOT / "scripts"))
+
+    # Import PoET-2 modules
+    from run_ab_enc_inference import load_encoder_only_model, encode_sequence
+
+    # Load model (cache for efficiency)
+    global _sablm_model_cache
+    cache_key = f"{checkpoint}_{device}"
+
+    if cache_key not in _sablm_model_cache:
+        print(f"Loading PoET-2 model: {checkpoint}")
+
+        # Find checkpoint file
+        checkpoint_dir = POET2_ROOT / "checkpoints" / checkpoint
+        best_checkpoint_file = checkpoint_dir / "best_checkpoint.json"
+
+        if best_checkpoint_file.exists():
+            import json
+            with open(best_checkpoint_file) as f:
+                best_info = json.load(f)
+            checkpoint_path = POET2_ROOT / best_info["model_path"]
+        else:
+            # Fallback to latest model file
+            model_files = sorted(checkpoint_dir.glob("model_step_*.safetensors"))
+            if not model_files:
+                raise FileNotFoundError(f"No model files found in {checkpoint_dir}")
+            checkpoint_path = model_files[-1]
+
+        # Auto-detect device
+        if device == "cuda" and not torch.cuda.is_available():
+            device = "cpu"
+            print("CUDA not available, using CPU")
+
+        dtype = torch.float16 if device == "cuda" else torch.float32
+
+        model, alphabet, s3di_alphabet = load_encoder_only_model(
+            checkpoint_path=checkpoint_path,
+            device=device,
+            dtype=dtype,
+        )
+
+        _sablm_model_cache[cache_key] = (model, alphabet, s3di_alphabet, device)
+        print(f"Model loaded and cached")
+    else:
+        model, alphabet, s3di_alphabet, device = _sablm_model_cache[cache_key]
+
+    # Prepare sequence
+    sequence = f"{heavy_seq}|{light_seq}" if light_seq else heavy_seq
+    device_obj = torch.device(device)
+
+    # Load structure information if requested
+    atomx, plddt, s3di_tokens = None, None, None
+    if use_structure_info and pdb_path:
+        try:
+            from poet_2.training_ab_enc.preprocess_ab import load_pdb_structure
+
+            expected_seq = heavy_seq + light_seq  # Without separator
+            atomx, plddt, s3di_tokens = load_pdb_structure(
+                Path(pdb_path),
+                expected_sequence=expected_seq,
+                heavy_chain=heavy_chain,
+                light_chain=light_chain,
+            )
+
+            # Warn if 3Di tokens fail while atomx/plddt succeed
+            if (atomx is not None or plddt is not None) and s3di_tokens is None:
+                print(f"Warning: 3Di tokens could not be generated for {pdb_path}")
+
+            # Insert padding for separator position (VH|VL -> VH + pad + VL)
+            if atomx is not None and plddt is not None and light_seq:
+                vh_len = len(heavy_seq)
+                # Insert NaN padding at separator position
+                atomx_padded = np.full((len(expected_seq) + 1, 3, 3), np.nan, dtype=np.float32)
+                plddt_padded = np.full(len(expected_seq) + 1, np.nan, dtype=np.float32)
+
+                atomx_padded[:vh_len] = atomx[:vh_len]
+                atomx_padded[vh_len + 1:] = atomx[vh_len:]
+                plddt_padded[:vh_len] = plddt[:vh_len]
+                plddt_padded[vh_len + 1:] = plddt[vh_len:]
+
+                atomx, plddt = atomx_padded, plddt_padded
+
+            # Also pad s3di_tokens if they exist
+            if s3di_tokens is not None and light_seq:
+                vh_len = len(heavy_seq)
+                # Insert mask character at separator position
+                s3di_tokens = s3di_tokens[:vh_len] + 'X' + s3di_tokens[vh_len:]
+
+            # Validate lengths match if structure data was returned
+            if atomx is not None or plddt is not None:
+                expected_len = len(heavy_seq) + (1 if light_seq else 0) + len(light_seq)
+                if atomx is not None and len(atomx) != expected_len:
+                    print(f"Warning: atomx length {len(atomx)} != expected {expected_len}, using sequence-only")
+                    atomx, plddt = None, None
+                elif plddt is not None and len(plddt) != expected_len:
+                    print(f"Warning: plddt length {len(plddt)} != expected {expected_len}, using sequence-only")
+                    atomx, plddt = None, None
+
+        except Exception as e:
+            # Fallback to sequence-only mode if structure loading fails
+            print(f"Warning: Structure loading failed ({e}), using sequence-only mode")
+            atomx, plddt, s3di_tokens = None, None, None
+
+    # Compute score based on mode
+    if compute_mode == "pll":
+        # Pseudo-log-likelihood: mask each position and compute likelihood (BATCH VERSION)
+        from tqdm import tqdm
+        from poet_2.models.poet_2_helpers import NamedInput, tokenize_seq_of_seqs
+
+        # Mask token character
+        mask_char = chr(alphabet.mask_token)
+
+        # Get sequence positions (excluding separator '|')
+        seq_positions = [i for i, char in enumerate(sequence) if char != '|']
+
+        vh_len = len(heavy_seq)
+
+        # Generate all masked sequences
+        masked_sequences = []
+        for seq_pos in seq_positions:
+            masked_seq = sequence[:seq_pos] + mask_char + sequence[seq_pos + 1:]
+            masked_sequences.append(masked_seq)
+
+        # Batch processing parameters (pll_batch_size from function argument)
+
+        # Collect log probs for each position
+        all_log_probs = []
+
+        # Process in batches
+        for batch_start in tqdm(range(0, len(masked_sequences), pll_batch_size),
+                                desc="Computing PLL (batch)", leave=False):
+            batch_end = min(batch_start + pll_batch_size, len(masked_sequences))
+            batch_masked_seqs = masked_sequences[batch_start:batch_end]
+            batch_positions = seq_positions[batch_start:batch_end]
+
+            # Create NamedInputs for batch
+            named_inputs = []
+            for masked_seq in batch_masked_seqs:
+                named_input = NamedInput(
+                    sequence=masked_seq,
+                    plddt=plddt,
+                    atomx=atomx,
+                    s3di=s3di_tokens,
+                )
+                named_inputs.append([named_input])
+
+            # Tokenize batch
+            tokenized = tokenize_seq_of_seqs(
+                named_inputs,
+                device=device_obj,
+                alphabet=alphabet,
+                alphabet_s3di=s3di_alphabet,
+            )
+
+            # Batch inference
+            mlm_logits_batch, _ = model.encoder_forward(
+                xs=tokenized["seqs"],
+                xs_plddts=tokenized["plddts"],
+                xs_s3dis=tokenized["s3dis"],
+                xs_atomxs=tokenized["atomxs"],
+                xs_atombs=tokenized["atombs"],
+                xs_segment_sizes=tokenized["segment_sizes"],
+            )
+
+            # Extract log probs for each masked position
+            log_probs_batch = F.log_softmax(mlm_logits_batch, dim=-1).detach().cpu().numpy()
+
+            for i, seq_pos in enumerate(batch_positions):
+                token_pos = seq_pos + 1  # +1 for start token
+                true_aa = sequence[seq_pos]
+                true_aa_idx = alphabet.encode(true_aa.encode())[0]
+                log_prob = log_probs_batch[i, token_pos, true_aa_idx]
+                all_log_probs.append((seq_pos, log_prob))
+
+        # Categorize by chain
+        heavy_log_probs = []
+        light_log_probs = []
+        for seq_pos, log_prob in all_log_probs:
+            if seq_pos < vh_len:
+                heavy_log_probs.append(log_prob)
+            elif seq_pos > vh_len:  # Skip separator
+                light_log_probs.append(log_prob)
+
+        # Compute average log-likelihood
+        total_log_probs = heavy_log_probs + light_log_probs
+        avg_ll = float(np.mean(total_log_probs))
+        perplexity = math.exp(-avg_ll)
+
+    elif compute_mode == "confidence":
+        # Confidence score: single inference without masking (original implementation)
+        result = encode_sequence(
+            model=model,
+            sequence=sequence,
+            alphabet=alphabet,
+            s3di_alphabet=s3di_alphabet,
+            device=device_obj,
+            atomx=atomx,
+            plddt=plddt,
+            s3di=s3di_tokens,
+        )
+
+        mlm_logits = result["mlm_logits"][0]  # (L, vocab)
+
+        # Convert to log probabilities
+        log_probs = F.log_softmax(mlm_logits, dim=-1).cpu().numpy()
+
+        vh_len = len(heavy_seq)
+        vl_len = len(light_seq)
+
+        # Reorder from model alphabet (ARNDCQEGHILKMFPSTWYV) to sorted order (ACDEFGHIKLMNPQRSTVWY)
+        model_order = "ARNDCQEGHILKMFPSTWYV"
+        sorted_order = "ACDEFGHIKLMNPQRSTVWY"
+        reorder_idx = [model_order.index(aa) for aa in sorted_order]
+
+        # VH: positions 1 to vh_len (skip start token at 0)
+        vh_log_probs_raw = log_probs[1:vh_len+1, :20]
+        vh_log_probs = vh_log_probs_raw[:, reorder_idx]
+
+        # VL: positions vh_len+2 to vh_len+1+vl_len (skip separator)
+        if light_seq:
+            vl_log_probs_raw = log_probs[vh_len+2:vh_len+2+vl_len, :20]
+            vl_log_probs = vl_log_probs_raw[:, reorder_idx]
+
+        # Compute sequence log-likelihood
+        aa_to_idx = {aa: i for i, aa in enumerate(sorted_order)}
+
+        def seq_log_likelihood(log_probs_arr, sequence):
+            """Compute average log-likelihood for sequence."""
+            ll_sum = 0.0
+            for i, aa in enumerate(sequence):
+                if i >= len(log_probs_arr):
+                    break
+                if aa in aa_to_idx:
+                    aa_idx = aa_to_idx[aa]
+                    ll_sum += log_probs_arr[i, aa_idx]
+            return ll_sum / len(sequence)
+
+        vh_ll = seq_log_likelihood(vh_log_probs, heavy_seq)
+        vl_ll = seq_log_likelihood(vl_log_probs, light_seq) if light_seq else 0.0
+
+        if light_seq:
+            avg_ll = (vh_ll + vl_ll) / 2
+        else:
+            avg_ll = vh_ll
+
+        perplexity = math.exp(-avg_ll)
+
+    else:
+        raise ValueError(f"Invalid compute_mode: {compute_mode}. Must be 'pll' or 'confidence'")
+
+    return perplexity
+
+
+def sablm_score_batch(df, use_structure_info=True, checkpoint="poet2_ab_enc_pretrain",
+                     heavy_chain="H", light_chain="L", device="cuda", compute_mode="pll",
+                     structure_dir=None, batch_size=1):
+    """
+    Batch version of sablm_score for processing multiple samples efficiently.
+
+    Args:
+        df: DataFrame with 'heavy' and 'light' columns (and optionally 'pdb_file' column)
+        use_structure_info: whether to use structure information
+        checkpoint: PoET-2 checkpoint name or path
+        heavy_chain: heavy chain identifier
+        light_chain: light chain identifier
+        device: cuda/cpu device
+        compute_mode: 'pll' (pseudo-log-likelihood) or 'confidence'
+        structure_dir: directory containing PDB files (if not using 'pdb_file' column)
+        batch_size: number of samples to process together (currently 1 due to variable seq lengths)
+
+    Returns:
+        df with heavy_perplexity, light_perplexity, average_perplexity columns
+    """
+    import torch
+    from tqdm import tqdm
+    import pandas as pd
+
+    results = []
+
+    # Process each sample
+    for idx, row in tqdm(df.iterrows(), total=len(df), desc="Processing samples"):
+        heavy_seq = row['heavy']
+        light_seq = row.get('light', '')
+
+        # Get PDB path
+        if use_structure_info:
+            if 'pdb_file' in row:
+                pdb_path = row['pdb_file']
+            elif structure_dir:
+                pdb_path = f"{structure_dir}/Wittrup2017_CST_Tm_{idx}.pdb"
+            else:
+                raise ValueError("structure_dir or pdb_file column required when use_structure_info=True")
+        else:
+            pdb_path = None
+
+        try:
+            # Call original sablm_score
+            ppl = sablm_score(
+                pdb_path=pdb_path,
+                heavy_seq=heavy_seq,
+                light_seq=light_seq,
+                use_structure_info=use_structure_info,
+                checkpoint=checkpoint,
+                heavy_chain=heavy_chain,
+                light_chain=light_chain,
+                device=device,
+                compute_mode=compute_mode
+            )
+
+            results.append({
+                'heavy_perplexity': ppl,
+                'light_perplexity': ppl,  # For consistency with other models
+                'average_perplexity': ppl
+            })
+        except Exception as e:
+            print(f"Error processing sample {idx}: {str(e)}")
+            results.append({
+                'heavy_perplexity': None,
+                'light_perplexity': None,
+                'average_perplexity': None
+            })
+
+    # Add results to DataFrame
+    result_df = pd.DataFrame(results)
+    for col in result_df.columns:
+        df[col] = result_df[col].values
+
+    return df
 
 
 def esm2_score(df, model_name='esm2_t33_650M_UR50D', device=None, batch_size=4, ism_weights_path=None, enable_batch=True):

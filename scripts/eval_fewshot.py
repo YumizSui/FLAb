@@ -30,14 +30,15 @@ DATA_DIR = ROOT / "data" / "FLAb_0"
 OUTPUT_DIR = ROOT / "reports" / "fewshot_evaluation"
 ELIGIBLE_DATASETS_CSV = ROOT / "data" / "fewshot_eligible_datasets.csv"
 
-# 6モデル（few-shot対象）
+# 7モデル（few-shot対象）
 MODELS = [
     "ablang2",
     "antiberty",
     "esm2",
     "ism",
     "sablm_nostr",
-    "sablm_str"
+    "sablm_str",
+    "onehot"
 ]
 
 # esm2, ismは650Mサブディレクトリを使用（zero-shot用）
@@ -58,6 +59,7 @@ SIGN_CORRECTION = {
 
 # モデル表示順序
 MODEL_ORDER = [
+    "onehot",
     "antiberty",
     "esm2",
     "ism",
@@ -68,6 +70,7 @@ MODEL_ORDER = [
 
 # モデル色定義
 MODEL_COLORS = {
+    'onehot': '#969696',
     'ablang2': '#1f77b4',
     'antiberty': '#6baed6',
     'esm2': '#9ecae1',
@@ -250,12 +253,9 @@ def merge_fewshot_zeroshot(fewshot_df: pd.DataFrame, zeroshot_df: pd.DataFrame) 
         axis=1
     )
 
-    # Few-shotは既に正しい符号（回帰なので正の相関=良い予測）
-    # ただし、可視化時の整合性のため同じ補正ルールを適用
-    merged['spearman_fewshot_corrected'] = merged.apply(
-        lambda row: row['mean_spearman'] * SIGN_CORRECTION.get(row['category'], 1),
-        axis=1
-    )
+    # Few-shotは生のfitnessで学習しているため符号補正不要
+    # (fitnessが既に「高い=良い」に処理済みなら常に正の相関が正しい)
+    merged['spearman_fewshot_corrected'] = merged['mean_spearman']
 
     return merged
 

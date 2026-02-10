@@ -94,11 +94,19 @@ def extract_onehot_features(csv_path: str, output_dir: Path) -> None:
     # Load CSV
     df = pd.read_csv(csv_path)
 
-    if 'sequence' not in df.columns:
-        print(f"⚠ Warning: 'sequence' column not found in {csv_path}")
+    # Handle different column formats
+    if 'sequence' in df.columns:
+        sequences = df['sequence'].tolist()
+    elif 'heavy' in df.columns and 'light' in df.columns:
+        # Combine heavy|light
+        sequences = [f"{h}|{l}" for h, l in zip(df['heavy'], df['light'])]
+    elif 'heavy' in df.columns:
+        sequences = df['heavy'].tolist()
+    elif 'light' in df.columns:
+        sequences = df['light'].tolist()
+    else:
+        print(f"⚠ Warning: No sequence columns found in {csv_path}")
         return
-
-    sequences = df['sequence'].tolist()
     n_samples = len(sequences)
 
     # Compute max length

@@ -158,35 +158,46 @@ def _cli():
         for pdb_path in pdb_files[chunk_start:chunk_end]:
             pdb_file = os.path.basename(pdb_path)
             pdb_name = pdb_file.split('.')[0]
-            chunk_pdb_list.append(extract_last_digits(pdb_name))
+            pdb_id = extract_last_digits(pdb_name)
 
-            if score_method == 'esmif':
-                chunk_pdb_score.append(esmif_score(pdb_path))
-            elif score_method == 'pyrosetta':
-                chunk_pdb_score.append(pyrosetta_score(pdb_path))
-            elif score_method == 'mpnn':
-                chunk_pdb_score.append(mpnn_score(pdb_path))
-            elif score_method == 'sablm':
-                row_id = extract_last_digits(pdb_name)
-                heavy_seq = df_og.loc[row_id, 'heavy']
-                light_seq = df_og.loc[row_id, 'light']
+            try:
+                if score_method == 'esmif':
+                    score = esmif_score(pdb_path)
+                elif score_method == 'pyrosetta':
+                    score = pyrosetta_score(pdb_path)
+                elif score_method == 'mpnn':
+                    score = mpnn_score(pdb_path)
+                elif score_method == 'sablm':
+                    row_id = extract_last_digits(pdb_name)
+                    heavy_seq = df_og.loc[row_id, 'heavy']
+                    light_seq = df_og.loc[row_id, 'light']
 
-                if variant == 'nostr':
-                    use_structure = False
-                elif variant == 'str':
-                    use_structure = True
+                    if variant == 'nostr':
+                        use_structure = False
+                    elif variant == 'str':
+                        use_structure = True
+                    else:
+                        use_structure = True
+
+                    score = sablm_score(
+                        pdb_path=pdb_path,
+                        heavy_seq=heavy_seq,
+                        light_seq=light_seq,
+                        use_structure_info=use_structure,
+                        checkpoint=checkpoint,
+                        device=device if device else 'cuda',
+                        pll_batch_size=pll_batch_size,
+                    )
                 else:
-                    use_structure = True
+                    score = None
 
-                chunk_pdb_score.append(sablm_score(
-                    pdb_path=pdb_path,
-                    heavy_seq=heavy_seq,
-                    light_seq=light_seq,
-                    use_structure_info=use_structure,
-                    checkpoint=checkpoint,
-                    device=device if device else 'cuda',
-                    pll_batch_size=pll_batch_size,
-                ))
+                # Only append if scoring succeeded
+                if score is not None:
+                    chunk_pdb_list.append(pdb_id)
+                    chunk_pdb_score.append(score)
+            except Exception as e:
+                print(f"⚠ Error scoring {pdb_file}: {e}")
+                continue
 
         chunk_df = pd.DataFrame({"pdb_file": chunk_pdb_list, "average_perplexity": chunk_pdb_score})
         chunk_df.to_csv(tmp_path, index=False)

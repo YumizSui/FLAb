@@ -48,6 +48,12 @@ MODELS_WITH_SUBDIR = {
     "ism": "650M"
 }
 
+# sablm_str → var2_str-0.4チェックポイントのスコアを使用
+SABLM_VAR2_CHECKPOINT = "var2_str-0.4_nofocal_noaug_lora"
+SABLM_VAR2_MODELS = {
+    "sablm_str": ("sablm_var2", SABLM_VAR2_CHECKPOINT)
+}
+
 # 符号補正ルール（論文: "The sign was inverted for aggregation, expression, and thermostability"）
 # 基準: corr(-perplexity, fitness) を計算（低perplexity=良い→正の相関=良い予測）
 # Figure 2のheatmapではagg/exp/tmのみ符号反転が適用される
@@ -136,7 +142,11 @@ ANTIBERTY_PAPER_VALUES = {
 
 def get_score_path(model: str, category: str, folder: str) -> Path:
     """スコアCSVのパスを取得"""
-    if model in MODELS_WITH_SUBDIR:
+    if model in SABLM_VAR2_MODELS:
+        # sablm_str → sablm_var2/var2_str-0.4_nofocal_noaug_lora
+        base_model, checkpoint = SABLM_VAR2_MODELS[model]
+        return SCORE_DIR / base_model / checkpoint / category / folder / f"{folder}_ppl.csv"
+    elif model in MODELS_WITH_SUBDIR:
         subdir = MODELS_WITH_SUBDIR[model]
         return SCORE_DIR / model / subdir / category / folder / f"{folder}_ppl.csv"
     else:
@@ -751,20 +761,20 @@ def plot_per_task_barplot_pearson(summary_df: pd.DataFrame):
 
 
 def plot_per_task_barplot_abs(corr_df: pd.DataFrame):
-    """タスク別バープロット（絶対値、論文スタイル、モデルごとに色分け）"""
-    print("\n生成中: per-task barplot (Absolute Spearman)...")
+    """タスク別バープロット（Pearson R²、負の相関は0、モデルごとに色分け）"""
+    print("\n生成中: per-task barplot (Pearson R²)...")
 
-    # 絶対値で集計
-    corr_df_abs = corr_df.copy()
-    corr_df_abs['spearman_abs'] = corr_df_abs['spearman_raw'].abs()
+    # 負の相関を0にしてから二乗（R²）
+    corr_df_r2 = corr_df.copy()
+    corr_df_r2['pearson_r2'] = corr_df_r2['pearson_raw'].apply(lambda x: max(0, x) ** 2 if not np.isnan(x) else np.nan)
 
-    summary_abs = corr_df_abs.groupby(['model', 'category']).agg({
-        'spearman_abs': ['mean', 'std', 'count']
+    summary_r2 = corr_df_r2.groupby(['model', 'category']).agg({
+        'pearson_r2': ['mean', 'std', 'count']
     }).reset_index()
-    summary_abs.columns = ['model', 'category', 'abs_mean', 'abs_std', 'abs_count']
+    summary_r2.columns = ['model', 'category', 'r2_mean', 'r2_std', 'r2_count']
 
     # モデル順序を固定
-    all_models = sorted(summary_abs['model'].unique())
+    all_models = sorted(summary_r2['model'].unique())
 
     # 手法別に色を定義
     model_colors = {
@@ -773,14 +783,14 @@ def plot_per_task_barplot_abs(corr_df: pd.DataFrame):
         'sablm_nostr': '#2ca02c', 'sablm_str': '#98df8a',
     }
 
-    categories = summary_abs['category'].unique()
+    categories = summary_r2['category'].unique()
 
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     axes = axes.flatten()
 
     for i, category in enumerate(sorted(categories)):
         ax = axes[i]
-        data = summary_abs[summary_abs['category'] == category]
+        data = summary_r2[summary_r2['category'] == category]
 
         # モデル順序でソート
         data = data.set_index('model').reindex(all_models).reset_index()
@@ -789,27 +799,27 @@ def plot_per_task_barplot_abs(corr_df: pd.DataFrame):
         bar_colors = [model_colors[model] for model in all_models]
 
         # NaNを0として扱う（欠損データ用）
-        means = data['abs_mean'].fillna(0)
-        stds = data['abs_std'].fillna(0)
+        means = data['r2_mean'].fillna(0)
+        stds = data['r2_std'].fillna(0)
 
         ax.bar(x, means, yerr=stds, capsize=5, color=bar_colors, edgecolor='black', linewidth=0.5)
         ax.set_xticks(x)
         ax.set_xticklabels(all_models, rotation=45, ha='right', fontsize=9)
-        ax.set_ylabel('Mean |Spearman|', fontsize=10)
+        ax.set_ylabel('Mean Pearson R²', fontsize=10)
         ax.set_title(category.capitalize(), fontsize=12, fontweight='bold')
         ax.axhline(0, color='black', linewidth=0.5, linestyle='--')
         ax.grid(axis='y', alpha=0.3)
-        ax.set_ylim(0, 0.8)  # より見やすい範囲
+        ax.set_ylim(0, 0.5)  # R²の範囲に合わせて調整
 
     # 未使用サブプロットを非表示
     for j in range(i+1, len(axes)):
         axes[j].axis('off')
 
-    plt.suptitle('FLAb1: Per-Task Average |Correlation| (Absolute Spearman, Paper Style)',
+    plt.suptitle('FLAb1: Per-Task Average Pearson R² (Negative correlations set to 0)',
                  fontsize=16, fontweight='bold')
     plt.tight_layout()
 
-    output_path = OUTPUT_DIR / "per_task_barplot_abs.png"
+    output_path = OUTPUT_DIR / "per_task_barplot_r2.png"
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     print(f"✓ 保存: {output_path}")
     plt.close()

@@ -63,7 +63,7 @@ class FewShotMLP(nn.Module):
 
 
 def train_single_trial(embeddings, fitness, hidden_dim, lr, epochs, patience, seed, device):
-    """Train one trial and return test Spearman rho and p-value."""
+    """Train one trial and return test Spearman rho, p-value, and predictions."""
     device_obj = torch.device(device)
     rng = np.random.RandomState(seed)
 
@@ -136,7 +136,15 @@ def train_single_trial(embeddings, fitness, hidden_dim, lr, epochs, patience, se
         test_pred = model(X_test).cpu().numpy()
 
     rho, p_value = spearmanr(y_test_raw, test_pred)
-    return rho, p_value, len(train_idx), len(val_idx), len(test_idx)
+
+    # Return predictions with indices
+    predictions = {
+        'test_idx': test_idx,
+        'y_true': y_test_raw,
+        'y_pred': test_pred
+    }
+
+    return rho, p_value, len(train_idx), len(val_idx), len(test_idx), predictions
 
 
 def run_fewshot(emb_path, csv_path, output_dir, hidden_dim, lr, epochs,
@@ -171,9 +179,11 @@ def run_fewshot(emb_path, csv_path, output_dir, hidden_dim, lr, epochs,
 
     # Run trials with different seeds
     trials = []
+    all_predictions = []
+
     for trial_idx in range(n_trials):
         seed = base_seed + trial_idx
-        rho, p_val, n_train, n_val, n_test = train_single_trial(
+        rho, p_val, n_train, n_val, n_test, preds = train_single_trial(
             embeddings, fitness, hidden_dim, lr, epochs, patience, seed, device
         )
         trials.append({
@@ -184,6 +194,16 @@ def run_fewshot(emb_path, csv_path, output_dir, hidden_dim, lr, epochs,
             "n_val": n_val,
             "n_test": n_test,
         })
+
+        # Collect predictions for this trial
+        for idx, y_true, y_pred in zip(preds['test_idx'], preds['y_true'], preds['y_pred']):
+            all_predictions.append({
+                'trial': trial_idx,
+                'seed': seed,
+                'index': int(idx),
+                'fitness_true': float(y_true),
+                'fitness_pred': float(y_pred)
+            })
 
     rhos = [t["spearman_rho"] for t in trials]
     p_vals = [t["spearman_p"] for t in trials]
@@ -209,6 +229,11 @@ def run_fewshot(emb_path, csv_path, output_dir, hidden_dim, lr, epochs,
     os.makedirs(output_dir, exist_ok=True)
     with open(output_path, "w") as f:
         json.dump(results, f, indent=2)
+
+    # Save predictions
+    pred_df = pd.DataFrame(all_predictions)
+    pred_path = os.path.join(output_dir, "predictions.csv")
+    pred_df.to_csv(pred_path, index=False)
 
     print(f"{model_name} | {category}/{dataset_name} | "
           f"N={len(df)} | rho={results['mean_spearman_rho']:.4f} ± {results['std_spearman_rho']:.4f}")

@@ -47,6 +47,15 @@ MODELS_WITH_SUBDIR = {
     "ism": "650M"
 }
 
+# sablm_str → var2_str-0.4チェックポイントのスコアを使用
+SABLM_VAR2_CHECKPOINT = "var2_str-0.4_nofocal_noaug_lora"
+SABLM_VAR2_MODELS = {
+    "sablm_str": ("sablm_var2", SABLM_VAR2_CHECKPOINT)
+}
+SABLM_VAR2_FEWSHOT_MODELS = {
+    "sablm_str": ("sablm_str_var2", SABLM_VAR2_CHECKPOINT)
+}
+
 # 符号補正ルール（zero-shotとの比較用）
 SIGN_CORRECTION = {
     "expression": -1,
@@ -92,7 +101,13 @@ def load_fewshot_results() -> pd.DataFrame:
     results = []
 
     for model in MODELS:
-        model_dir = FEWSHOT_DIR / model
+        # sablm_str → sablm_str_var2/var2_str-0.4_nofocal_noaug_lora
+        if model in SABLM_VAR2_FEWSHOT_MODELS:
+            base_model, checkpoint = SABLM_VAR2_FEWSHOT_MODELS[model]
+            model_dir = FEWSHOT_DIR / base_model / checkpoint
+        else:
+            model_dir = FEWSHOT_DIR / model
+
         if not model_dir.exists():
             print(f"⚠ Warning: {model_dir} not found")
             continue
@@ -149,7 +164,11 @@ def load_fewshot_results() -> pd.DataFrame:
 
 def get_zeroshot_score_path(model: str, category: str, dataset: str) -> Path:
     """Zero-shotスコアCSVのパスを取得"""
-    if model in MODELS_WITH_SUBDIR:
+    if model in SABLM_VAR2_MODELS:
+        # sablm_str → sablm_var2/var2_str-0.4_nofocal_noaug_lora
+        base_model, checkpoint = SABLM_VAR2_MODELS[model]
+        return SCORE_DIR / base_model / checkpoint / category / dataset / f"{dataset}_ppl.csv"
+    elif model in MODELS_WITH_SUBDIR:
         subdir = MODELS_WITH_SUBDIR[model]
         return SCORE_DIR / model / subdir / category / dataset / f"{dataset}_ppl.csv"
     else:
@@ -325,6 +344,74 @@ def compute_overall_summary(merged_df: pd.DataFrame) -> pd.DataFrame:
         print(f"  {row['model']:15s}: Few-shot={row['fewshot_mean']:6.3f}  Zero-shot={row['zeroshot_mean']:6.3f}  Δ={row['improvement']:+6.3f}")
 
     return summary
+
+
+# ============================================================================
+# Ranking
+# ============================================================================
+
+def calculate_model_ranks(merged_df: pd.DataFrame):
+    """モデルランキングを計算（Few-shotとZero-shotの両方）"""
+    print("\n" + "="*80)
+    print("モデルランキング")
+    print("="*80)
+
+    # 各データセットでモデルをランク付け
+    rank_data = []
+
+    for category in merged_df['category'].unique():
+        for dataset in merged_df['dataset'].unique():
+            subset = merged_df[
+                (merged_df['category'] == category) &
+                (merged_df['dataset'] == dataset)
+            ].copy()
+
+            if len(subset) == 0:
+                continue
+
+            # Few-shotランク（降順: 大きい値=1位）
+            subset['fewshot_rank'] = subset['spearman_fewshot_corrected'].rank(ascending=False, method='average')
+            # Zero-shotランク
+            subset['zeroshot_rank'] = subset['spearman_zeroshot_corrected'].rank(ascending=False, method='average')
+
+            for _, row in subset.iterrows():
+                rank_data.append({
+                    'model': row['model'],
+                    'category': category,
+                    'dataset': dataset,
+                    'fewshot_rank': row['fewshot_rank'],
+                    'zeroshot_rank': row['zeroshot_rank']
+                })
+
+    rank_df = pd.DataFrame(rank_data)
+
+    # モデル別、カテゴリ別の平均ランク
+    rank_summary = rank_df.groupby(['model', 'category']).agg({
+        'fewshot_rank': 'mean',
+        'zeroshot_rank': 'mean'
+    }).reset_index()
+
+    # 全体平均ランク
+    overall_rank = rank_df.groupby('model').agg({
+        'fewshot_rank': 'mean',
+        'zeroshot_rank': 'mean'
+    }).reset_index()
+    overall_rank = overall_rank.sort_values('fewshot_rank')
+
+    # 保存
+    output_path = OUTPUT_DIR / "model_ranks.csv"
+    rank_summary.to_csv(output_path, index=False)
+    print(f"\n✓ モデルランキング保存: {output_path}")
+
+    print("\n全体平均ランク（小さい方が良い）:")
+    print("\nFew-shot:")
+    for _, row in overall_rank.iterrows():
+        print(f"  {row['model']:15s}: {row['fewshot_rank']:.2f}")
+    print("\nZero-shot:")
+    for _, row in overall_rank.sort_values('zeroshot_rank').iterrows():
+        print(f"  {row['model']:15s}: {row['zeroshot_rank']:.2f}")
+
+    return rank_df, rank_summary, overall_rank
 
 
 # ============================================================================
@@ -550,6 +637,260 @@ def plot_overall_barplot(overall_summary: pd.DataFrame):
     plt.close()
 
 
+def plot_individual_barplots(task_summary: pd.DataFrame):
+    """Few-shotとZero-shotの個別バープロット（2つの独立した図）"""
+
+    # Few-shot単独
+    print("\n生成中: fewshot individual barplot...")
+    categories = sorted(task_summary['category'].unique())
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    axes = axes.flatten()
+
+    for i, category in enumerate(categories):
+        ax = axes[i]
+        data = task_summary[task_summary['category'] == category]
+
+        # モデル順序
+        model_order_subset = [m for m in MODEL_ORDER if m in data['model'].values]
+        data = data.set_index('model').reindex(model_order_subset).reset_index()
+
+        x = np.arange(len(model_order_subset))
+        bar_colors = [MODEL_COLORS.get(m, 'gray') for m in model_order_subset]
+
+        means = data['fewshot_mean'].fillna(0)
+        stds = data['fewshot_std'].fillna(0)
+
+        ax.bar(x, means, yerr=stds, capsize=5, color=bar_colors, edgecolor='black', linewidth=0.5)
+        ax.set_xticks(x)
+        ax.set_xticklabels(model_order_subset, rotation=45, ha='right', fontsize=9)
+        ax.set_ylabel('Mean Spearman', fontsize=10)
+        ax.set_title(category.capitalize(), fontsize=12, fontweight='bold')
+        ax.axhline(0, color='black', linewidth=0.5, linestyle='--')
+        ax.grid(axis='y', alpha=0.3)
+
+    # 未使用サブプロット
+    for j in range(i+1, len(axes)):
+        axes[j].axis('off')
+
+    plt.suptitle('FLAb Few-shot: Per-Task Average Correlation',
+                 fontsize=16, fontweight='bold')
+    plt.tight_layout()
+
+    output_path = OUTPUT_DIR / "per_task_barplot_fewshot.png"
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"✓ 保存: {output_path}")
+    plt.close()
+
+    # Zero-shot単独
+    print("\n生成中: zeroshot individual barplot...")
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    axes = axes.flatten()
+
+    for i, category in enumerate(categories):
+        ax = axes[i]
+        data = task_summary[task_summary['category'] == category]
+
+        # モデル順序
+        model_order_subset = [m for m in MODEL_ORDER if m in data['model'].values]
+        data = data.set_index('model').reindex(model_order_subset).reset_index()
+
+        x = np.arange(len(model_order_subset))
+        bar_colors = [MODEL_COLORS.get(m, 'gray') for m in model_order_subset]
+
+        means = data['zeroshot_mean'].fillna(0)
+        stds = data['zeroshot_std'].fillna(0)
+
+        ax.bar(x, means, yerr=stds, capsize=5, color=bar_colors, edgecolor='black', linewidth=0.5)
+        ax.set_xticks(x)
+        ax.set_xticklabels(model_order_subset, rotation=45, ha='right', fontsize=9)
+        ax.set_ylabel('Mean Spearman', fontsize=10)
+        ax.set_title(category.capitalize(), fontsize=12, fontweight='bold')
+        ax.axhline(0, color='black', linewidth=0.5, linestyle='--')
+        ax.grid(axis='y', alpha=0.3)
+
+    # 未使用サブプロット
+    for j in range(i+1, len(axes)):
+        axes[j].axis('off')
+
+    plt.suptitle('FLAb Zero-shot: Per-Task Average Correlation',
+                 fontsize=16, fontweight='bold')
+    plt.tight_layout()
+
+    output_path = OUTPUT_DIR / "per_task_barplot_zeroshot.png"
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"✓ 保存: {output_path}")
+    plt.close()
+
+
+def plot_rank_barplot(rank_summary: pd.DataFrame, overall_rank: pd.DataFrame):
+    """ランキングバープロット（2つの独立した図）"""
+
+    # 図1: タスク別平均ランク（Few-shot）
+    print("\n生成中: rank barplot (per task, fewshot)...")
+
+    categories = sorted(rank_summary['category'].unique())
+    models = sorted(rank_summary['model'].unique())
+
+    fig, ax = plt.subplots(figsize=(20, 8))
+
+    x = np.arange(len(categories))
+    width = 0.8 / len(models)
+
+    for i, model in enumerate(models):
+        ranks = []
+        for cat in categories:
+            match = rank_summary[(rank_summary['model'] == model) & (rank_summary['category'] == cat)]
+            if len(match) > 0:
+                ranks.append(match.iloc[0]['fewshot_rank'])
+            else:
+                ranks.append(np.nan)
+        ax.bar(x + i*width, ranks, width, label=model, color=MODEL_COLORS.get(model, 'gray'),
+               edgecolor='black', linewidth=0.5)
+
+    ax.set_xlabel('Task Category', fontsize=12)
+    ax.set_ylabel('Average Rank (lower = better)', fontsize=12)
+    ax.set_title('FLAb Few-shot: Average Rank by Task Category', fontsize=14, fontweight='bold')
+    ax.set_xticks(x + width * (len(models)-1) / 2)
+    ax.set_xticklabels([c.capitalize() for c in categories], rotation=0, ha='center', fontsize=11)
+    ax.legend(loc='upper right', fontsize=10, ncol=3, frameon=True, edgecolor='black')
+    ax.grid(axis='y', alpha=0.3)
+
+    plt.tight_layout()
+    output_path = OUTPUT_DIR / "rank_barplot_per_task_fewshot.png"
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"✓ 保存: {output_path}")
+    plt.close()
+
+    # 図2: 全体平均ランク（Few-shot）
+    print("\n生成中: rank barplot (overall, fewshot)...")
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    sorted_overall = overall_rank.sort_values('fewshot_rank')
+    colors_list = [MODEL_COLORS.get(model, 'gray') for model in sorted_overall['model']]
+
+    ax.barh(range(len(sorted_overall)), sorted_overall['fewshot_rank'],
+            color=colors_list, edgecolor='black', linewidth=0.5)
+    ax.set_yticks(range(len(sorted_overall)))
+    ax.set_yticklabels(sorted_overall['model'], fontsize=11)
+    ax.set_xlabel('Average Rank (lower = better)', fontsize=12)
+    ax.set_title('FLAb Few-shot: Overall Average Rank', fontsize=14, fontweight='bold')
+    ax.invert_yaxis()
+    ax.grid(axis='x', alpha=0.3)
+
+    plt.tight_layout()
+    output_path = OUTPUT_DIR / "rank_barplot_overall_fewshot.png"
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"✓ 保存: {output_path}")
+    plt.close()
+
+
+def plot_r2_barplot(merged_df: pd.DataFrame):
+    """タスク別R²バープロット（負の相関を0にしてから二乗）"""
+    print("\n生成中: R² barplot...")
+
+    from scipy.stats import pearsonr
+
+    # 各model×datasetでPearson相関を計算してR²化
+    r2_results = []
+
+    for _, row in merged_df.iterrows():
+        model = row['model']
+        category = row['category']
+        dataset = row['dataset']
+
+        # Few-shot R² (mean_spearmanをそのまま使う代わりに、Pearson相関想定で計算)
+        # Note: Few-shotはSpearmanで評価されているが、ここではZero-shotとの比較のためPearsonベースで統一
+        fewshot_corr = row['spearman_fewshot_corrected']  # 実際はSpearmanだが近似として使用
+        fewshot_r2 = max(0, fewshot_corr) ** 2 if not np.isnan(fewshot_corr) else np.nan
+
+        # Zero-shot: 元データからPearson相関を再計算してR²化
+        score_path = get_zeroshot_score_path(model, category, dataset)
+        if score_path.exists():
+            try:
+                score_df = pd.read_csv(score_path)
+                valid = score_df[['average_perplexity', 'fitness']].dropna()
+                if len(valid) >= 3:
+                    p_corr, _ = pearsonr(valid['average_perplexity'], valid['fitness'])
+                    # 符号補正を適用
+                    p_corr_corrected = p_corr * SIGN_CORRECTION.get(category, 1)
+                    zeroshot_r2 = max(0, p_corr_corrected) ** 2
+                else:
+                    zeroshot_r2 = np.nan
+            except:
+                zeroshot_r2 = np.nan
+        else:
+            zeroshot_r2 = np.nan
+
+        r2_results.append({
+            'model': model,
+            'category': category,
+            'dataset': dataset,
+            'fewshot_r2': fewshot_r2,
+            'zeroshot_r2': zeroshot_r2
+        })
+
+    r2_df = pd.DataFrame(r2_results)
+
+    # タスク別に集計
+    task_r2_summary = r2_df.groupby(['model', 'category']).agg({
+        'fewshot_r2': ['mean', 'std'],
+        'zeroshot_r2': ['mean', 'std']
+    }).reset_index()
+    task_r2_summary.columns = ['model', 'category', 'fewshot_r2_mean', 'fewshot_r2_std',
+                                'zeroshot_r2_mean', 'zeroshot_r2_std']
+
+    # プロット
+    categories = sorted(task_r2_summary['category'].unique())
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    axes = axes.flatten()
+
+    for i, category in enumerate(categories):
+        ax = axes[i]
+        data = task_r2_summary[task_r2_summary['category'] == category]
+
+        # モデル順序
+        model_order_subset = [m for m in MODEL_ORDER if m in data['model'].values]
+        data = data.set_index('model').reindex(model_order_subset).reset_index()
+
+        x = np.arange(len(model_order_subset))
+        width = 0.35
+
+        bar_colors = [MODEL_COLORS.get(m, 'gray') for m in model_order_subset]
+
+        # Zero-shot
+        ax.bar(x - width/2, data['zeroshot_r2_mean'], width, label='Zero-shot',
+               color='lightgray', edgecolor='black', linewidth=0.5)
+
+        # Few-shot
+        ax.bar(x + width/2, data['fewshot_r2_mean'], width, label='Few-shot',
+               color=bar_colors, edgecolor='black', linewidth=0.5)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(model_order_subset, rotation=45, ha='right', fontsize=9)
+        ax.set_ylabel('Mean Pearson R²', fontsize=10)
+        ax.set_title(category.capitalize(), fontsize=12, fontweight='bold')
+        ax.axhline(0, color='black', linewidth=0.5, linestyle='--')
+        ax.grid(axis='y', alpha=0.3)
+        ax.legend(fontsize=9)
+        ax.set_ylim(0, 0.5)
+
+    # 未使用サブプロット
+    for j in range(i+1, len(axes)):
+        axes[j].axis('off')
+
+    plt.suptitle('FLAb: Per-Task Pearson R² Comparison (Negative correlations set to 0)',
+                 fontsize=16, fontweight='bold')
+    plt.tight_layout()
+
+    output_path = OUTPUT_DIR / "per_task_r2_barplot.png"
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"✓ 保存: {output_path}")
+    plt.close()
+
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -587,15 +928,21 @@ def main():
     task_summary = compute_task_summary(merged_df)
     overall_summary = compute_overall_summary(merged_df)
 
-    # Step 5: 可視化
+    # Step 5: ランキング
+    rank_df, rank_summary, overall_rank = calculate_model_ranks(merged_df)
+
+    # Step 6: 可視化
     print("\n" + "="*80)
     print("可視化")
     print("="*80)
 
     plot_comparison_heatmap(merged_df)
     plot_comparison_scatter(merged_df)
+    plot_individual_barplots(task_summary)
     plot_improvement_barplot(task_summary)
     plot_overall_barplot(overall_summary)
+    plot_rank_barplot(rank_summary, overall_rank)
+    plot_r2_barplot(merged_df)
 
     print("\n" + "="*80)
     print("✓ 全ての処理が完了しました")
